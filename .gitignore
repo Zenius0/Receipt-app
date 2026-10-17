@@ -1,0 +1,26 @@
+.DS_Store
+.env
+.env.local
+*.log
+
+backend/api
+backend/bin/
+backend/vendor/
+
+mobile/node_modules/
+mobile/.expo/
+mobile/dist/
+mobile/.env
+mobile/ios/Pods/
+mobile/android/build/
+mobile/android/app/build/
+
+.idea/
+.vscode/
+
+# iOS / Android imza ve sağlayıcı yapılandırmaları (gizli / kişiye özel)
+*.p12
+*.mobileprovision
+*.keystore
+GoogleService-Info.plist
+GoogleService-Info.json

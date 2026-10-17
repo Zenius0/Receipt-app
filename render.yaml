@@ -1,0 +1,52 @@
+services:
+  - type: web
+    name: fatura-api
+    runtime: docker
+    # dockerfilePath ve dockerContext depo KÖKÜNE göre çözülür (Render Blueprint kuralı).
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    # free | 0.5c-512mb ($7/ay) | 1c-2g ($25/ay)
+    # Not: "free" 15 dk hareketsizlikte kapanır ve ~1 dk içinde açılır;
+    # fiş taraması yapan bir uygulamada ilk istek 1 dk bekletir.
+    plan: 0.5c-512mb
+    healthCheckPath: /healthz
+    autoDeploy: false
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: PORT
+        value: 8080
+      - key: DATABASE_URL
+        fromDatabase:
+          name: fatura-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ACCESS_TOKEN_TTL
+        value: 24h
+      - key: GOOGLE_CLIENT_IDS
+        sync: false
+      - key: APPLE_CLIENT_IDS
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
+      # Fiş okuma (ADIM 2)
+      - key: AI_PROVIDER
+        value: gemini
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3.8-flash
+      - key: MAX_SCAN_IMAGE_BYTES
+        value: 8388608
+      - key: SCAN_TIMEOUT
+        value: 45s
+
+databases:
+  - name: fatura-db
+    # free | 0.1c-256mb ($6/ay) | 0.5c-1g ($19/ay)
+    # Not: "free" veritabanı 30 gün sonra SİLİNİR (14 günlük uzatma süresi).
+    # Gerçek veri tutacaksanız ücretli plan seçin.
+    plan: 0.1c-256mb
+    databaseName: fatura
+    user: fatura

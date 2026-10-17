@@ -1,0 +1,457 @@
+# Akıllı Fatura ve Gider Takipçisi — Auth + Fiş Okuma Altyapısı
+
+**ADIM 1 — Kimlik doğrulama:** Harici auth sağlayıcı kullanmadan, cihaz içi Google/Apple Sign-In
+token'larını Go backend'de doğrulayan ve kendi oturum JWT'sini üreten katman.
+
+**ADIM 2 — Veri tabanı ve çekirdek API:** Render PostgreSQL'de `receipts` tablosu, fiş görselini
+yapay zekâya gönderip yapılandırılmış veri çıkaran `POST /api/v1/receipts/scan` ve kullanıcı
+onayından sonra kaydı yazan `POST /api/v1/receipts/confirm`.
+
+> **Maliyet ve gizlilik tasarımı:** Fiş görselleri sunucuda saklanmaz. Görsel cihazın yerel
+> dosya sisteminde kalır; backend yalnızca metinsel metadata'yı ve cihaz içi dosya yolunu
+> (`local_image_path`) saklar. Görsel AI'ya işlenmek için gönderilir, ancak kalıcılaştırılmaz.
+
+## Mimari
+
+```
+┌─────────────────────────┐
+│  Mobil (Expo / RN)      │
+│                         │
+│  @react-native-google-  │   id_token / identityToken
+│  signin/google-signin   ├──────────────────────────┐
+│  @invertase/react-native│                          │
+│  -apple-authentication │
+└─────────────────────────┘                          ▼
+                                    ┌───────────────────────────────┐
+                                    │  Go API (Render)              │
+                                    │                               │
+                                    │  POST /api/v1/auth/google     │
+                                    │    └─ Google tokeninfo        │
+                                    │  POST /api/v1/auth/apple      │
+                                    │    └─ Apple JWKS (RS256)      │
+                                    │           │                   │
+                                    │           ▼                   │
+                                    │     auth.Service              │
+                                    │       ├─ UserRepository       │
+                                    │       └─ TokenIssuer (HS256)  │
+                                    │           │                   │
+                                    │  GET /api/v1/me (JWT guard)   │
+                                    └───────────┬───────────────────┘
+                                                ▼
+                                    ┌───────────────────────┐
+                                    │ PostgreSQL (Render)   │
+                                    │ users                 │
+                                    └───────────────────────┘
+```
+
+Akış: cihazdaki kütüphane token'ı üretir → backend token'ı sağlayıcıya doğrulatır →
+kullanıcıyı `users` tablosuna upsert eder → backend kendi imzaladığı JWT'yi döner →
+mobil oturumu `expo-secure-store` içinde saklar → sonraki istekler `Authorization: Bearer` ile korunur.
+
+```
+             ADIM 2 — Fiş akışı
+
+ ┌─────────────────────────┐
+ │  Mobil cihaz            │
+ │                         │
+ │  kamera / galeri ───────┼──► base64 veya multipart ──┐
+ │  görsel: yerel dosya    │                             │
+ │  (sunucuya kaydedilmez) │                             ▼
+ └─────────────────────────┘           ┌────────────────────────────────┐
+                                       │  POST /api/v1/receipts/scan   │
+                                       │    └─ JWT guard                │
+                                       │    └─ görsel doğrulama (mime,  │
+                                       │       boyut, decode)           │
+                                       │           │                   │
+                                       │           ▼                   │
+                                       │     ai.Scanner                │
+                                       │       ├─ Gemini (varsayılan)  │
+                                       │       └─ OpenAI (alternatif)  │
+                                       │           │                   │
+                                       │           ▼                   │
+                                       │  JSON Schema ile zorlanmış   │
+                                       │  çıktı + alan doğrulaması     │
+                                       │           │                   │
+                                       │           ▼                   │
+                                       │  200 { storeName, totalAmount,│
+                                       │       currency, category,     │
+                                       │       receiptDate }           │
+                                       │  (kullanıcı onayı bekler)     │
+                                       └───────────┬───────────────────┘
+                                                   │ POST /receipts/confirm
+                                                   ▼
+                                       ┌────────────────────────────────┐
+                                       │  receipts (metadata + cihaz    │
+                                       │  içi görsel yolu)               │
+                                       └────────────────────────────────┘
+```
+
+`scan` isteğinde görsel belleğe alınır, AI'ya gönderilir ve istek sonunda düşer.
+`confirm` isteğinde görsel tekrar gönderilmez — yalnızca cihazdaki dosyanın yolu kaydedilir.
+
+## Proje Yapısı
+
+```
+.
+├── db/schema.sql                      # bağımsız şema referansı
+├── render.yaml                        # Render Blueprint (web + postgres)
+├── backend/
+│   ├── Dockerfile
+│   ├── go.mod
+│   ├── cmd/api/main.go                # wiring, graceful shutdown
+│   └── internal/
+│       ├── auth/                      # domain: provider doğrulama + oturum token'ı
+│       │   ├── verifier.go            #   Verifier arayüzü + Identity
+│       │   ├── google.go              #   Google tokeninfo doğrulama
+│       │   ├── apple.go               #   Apple JWKS + nonce doğrulama
+│       │   ├── tokens.go              #   kendi JWT'mizi üretir/parse eder
+│       │   └── service.go             #   SignIn orkestrasyonu
+│       ├── config/config.go           # env doğrulamalı konfigürasyon
+│       ├── httpx/response.go          # JSON yanıt yardımcıları
+│       ├── httpapi/
+│       │   ├── router.go              # route + middleware zinciri
+│       │   └── handlers/
+│       │       ├── auth.go            #   giriş ve /me handler'ları
+│       │       └── receipts.go        #   scan (multipart/base64) + confirm
+│       ├── ai/                        # ADIM 2: fiş görseli okuma
+│       │   ├── scanner.go            #   Scanner arayüzü, prompt, JSON şema, doğrulama
+│       │   ├── image.go              #   base64 çözme, mime tespiti, boyut kontrolü
+│       │   ├── client.go             #   ortak HTTP istemcisi + yeniden deneme
+│       │   ├── gemini.go             #   Gemini Interactions API
+│       │   └── openai.go             #   OpenAI Chat Completions (alternatif)
+│       ├── receipts/service.go        #   Scan ve Confirm orkestrasyonu
+│       ├── middleware/                # JWT guard, CORS, log, recover, request-id
+│       ├── platform/db/               # pgxpool + gömülü migration çalıştırıcı
+│       │   └── migrations/
+│       │       ├── 000001_create_users.sql
+│       │       └── 000002_create_receipts.sql
+│       └── store/                     # domain tipleri + repository arayüzleri
+│           ├── store.go               #   UserRepository
+│           ├── receipt.go             #   Receipt, kategori/para birimi normalizasyonu
+│           └── pgstore/               #   PostgreSQL implementasyonları
+└── mobile/src/
+    ├── config/env.ts
+    ├── api/client.ts                  # fetch sarmalayıcı (timeout, bearer, hata eşleme)
+    ├── api/types.ts
+    ├── services/authService.ts        # Google/Apple token → backend
+    └── hooks/useSession.ts            # React entegrasyon örneği
+```
+
+## Veritabanı
+
+`users` tablosu `backend/internal/platform/db/migrations/000001_create_users.sql` içindedir ve
+servis başlarken otomatik çalışır (`schema_migrations` ile idempotent).
+
+| Kolon | Tip | Not |
+|---|---|---|
+| `id` | UUID | `gen_random_uuid()` PK |
+| `email` | TEXT | unique, DB seviyesinde lowercase kontrolü |
+| `name` | TEXT | nullable |
+| `provider` | TEXT | `google` \| `apple` (CHECK) |
+| `provider_user_id` | TEXT | sağlayıcının `sub` değeri, `(provider, provider_user_id)` unique |
+| `accountant_email` | TEXT | nullable, kısmi index ile |
+| `created_at` | TIMESTAMPTZ | `now()` |
+
+Manuel kurulum isterseniz `db/schema.sql` dosyasını doğrudan çalıştırabilirsiniz.
+
+### `receipts` tablosu (ADIM 2)
+
+Migration: `backend/internal/platform/db/migrations/000002_create_receipts.sql`
+
+| Kolon | Tip | Not |
+|---|---|---|
+| `id` | UUID | `gen_random_uuid()` PK |
+| `user_id` | UUID | `users(id)` FK, `ON DELETE CASCADE` |
+| `store_name` | TEXT | 1–200 karakter (CHECK) |
+| `total_amount` | NUMERIC(12,2) | `>= 0` (CHECK) |
+| `currency` | VARCHAR(3) | büyük harf ISO 4217 (CHECK) |
+| `category` | TEXT | CHECK ile 12 kanonik değer |
+| `receipt_date` | TIMESTAMPTZ | gelecek tarire izin verilmez (CHECK) |
+| `local_image_path` | TEXT | nullable, **cihaz içi yol** — sunucuda dosya yok |
+| `created_at` | TIMESTAMPTZ | `now()` |
+
+İndeksler: `(user_id, created_at DESC)`, `(user_id, receipt_date DESC)`, `(user_id, category)`.
+
+Kategori değerleri (DB kısıtı, AI prompt şeması ve Go sabitleri tek kaynaktan beslenir):
+`fuel`, `food`, `groceries`, `repair`, `software`, `office`, `travel`, `health`,
+`entertainment`, `clothing`, `utilities`, `other`.
+
+> **Tasarım notu — `local_image_path`:** Bu değer sunucudan erişilebilir bir dosya yolu
+> **değildir**; cihazın kendi dosya sisteminde çözümlenir. Kullanıcı cihaz değiştirdiğinde
+> veya uygulamayı yeniden kurduğunda eski yollar geçersizleşir. Yalnızca metadata güvenilirdir.
+
+## Endpoint'ler
+
+### `POST /api/v1/auth/google`
+
+```json
+{ "token": "<google id_token>", "name": "Selim Aydın" }
+```
+
+### `POST /api/v1/auth/apple`
+
+```json
+{ "token": "<apple identityToken>", "name": "Selim Aydın", "nonce": "<cıhazın ürettiği ham nonce>" }
+```
+
+`name` opsiyoneldir; verilmezse token içindeki claim kullanılır. Apple `fullName` bilgisini yalnızca
+ilk yetkilendirmede döndüğü için istemcinin adı buradan iletmesi gerekir.
+
+Başarılı yanıt (`200`):
+
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiIs...",
+  "tokenType": "Bearer",
+  "expiresAt": "2026-10-18T12:00:00Z",
+  "user": {
+    "id": "0f5c...",
+    "email": "selim@example.com",
+    "name": "Selim Aydın",
+    "provider": "google",
+    "accountantEmail": null,
+    "createdAt": "2026-10-17T12:00:00Z"
+  }
+}
+```
+
+Hata gövdesi: `{"error": "<code>", "message": "<insan okunabilir>"}`
+
+| Durum | `error` | Anlam |
+|---|---|---|
+| 400 | `invalid_request` | gövde bozuk / `token` eksik |
+| 401 | `invalid_token` | sağlayıcı token'ı geçersiz, süresi dolmuş veya `aud`/`iss` eşleşmiyor |
+| 401 | `email_not_verified` | Google tarafında e-posta doğrulanmamış |
+| 409 | `email_conflict` | e-posta başka bir sağlayıcıyla kayıtlı |
+| 500 | `internal_error` | beklenmeyen hata |
+
+### `GET /api/v1/me` (korumalı)
+
+`Authorization: Bearer <token>` olmadan `401` döner; token geçerliyse güncel kullanıcıyı döner.
+
+### `POST /api/v1/receipts/scan` (korumalı)
+
+Fiş görselini alır, yapay zekâya gönderir ve **kullanıcı onayı için** ayrıştırılmış veriyi
+döner. Bu aşamada hiçbir şey veritabanına yazılmaz.
+
+İki gövde biçimi desteklenir:
+
+**a) multipart/form-data** — alan adı `image` (`file`, `receipt`, `photo` da kabul edilir):
+
+```bash
+curl -X POST https://<api>/api/v1/receipts/scan \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "image=@receipt.jpg"
+```
+
+**b) application/json** — base64 gövde (data URL öneki de kabul edilir):
+
+```json
+{ "imageBase64": "data:image/jpeg;base64,/9j/4AAQ...", "mimeType": "image/jpeg" }
+```
+
+Başarılı yanıt (`200`):
+
+```json
+{
+  "storeName": "Shell Petrol",
+  "totalAmount": 1500.25,
+  "currency": "TRY",
+  "category": "fuel",
+  "receiptDate": "2026-10-16T12:00:00Z",
+  "taxNumber": "1234567890"
+}
+```
+
+Yanıt başlığında `X-AI-Model` hangi sağlayıcı/modelin çalıştığını belirtir.
+
+| Durum | `error` | Anlam |
+|---|---|---|
+| 400 | `invalid_image` | gövde bozuk, multipart alanı yok, base64 geçersiz |
+| 413 | `image_too_large` | görsel `MAX_SCAN_IMAGE_BYTES` sınırını aşıyor |
+| 415 | `unsupported_image` | JPEG/PNG/WEBP/HEIC dışında format veya desteklenmeyen `Content-Type` |
+| 422 | `not_a_receipt` | görselde okunabilir bir fiş yok (`message` modelin açıklamasıdır) |
+| 422 | `incomplete_receipt` | fiş geçerli ama zorunlu alan okunamadı |
+| 429 | `rate_limited` | sağlayıcı kotası doldu |
+| 502 | `ai_unavailable` | sağlayıcı 5xx döndürdü veya kullanılamaz yanıt verdi |
+| 504 | `ai_timeout` | AI çağrısı zaman aşımına uğradı |
+| 500 | `ai_not_configured` | sunucuda API anahtarı eksik (sunucu tarafı hata) |
+
+### `POST /api/v1/receipts/confirm` (korumalı)
+
+Kullanıcının onayladığı veriyi `receipts` tablosuna yazar. `user_id` **istemciden alınmaz**;
+JWT'den çözülür.
+
+```json
+{
+  "storeName": "Shell Petrol",
+  "totalAmount": 1500.25,
+  "currency": "TRY",
+  "category": "fuel",
+  "receiptDate": "2026-10-16T12:00:00Z",
+  "localImagePath": "file:///data/user/0/com.fatura/cache/receipt-1.jpg"
+}
+```
+
+Başarılı yanıt (`201`) — kaydedilen satır:
+
+```json
+{
+  "id": "6f1e...",
+  "userId": "0f5c...",
+  "storeName": "Shell Petrol",
+  "totalAmount": 1500.25,
+  "currency": "TRY",
+  "category": "fuel",
+  "receiptDate": "2026-10-16T12:00:00Z",
+  "localImagePath": "file:///data/user/0/com.fatura/cache/receipt-1.jpg",
+  "createdAt": "2026-10-17T12:03:00Z"
+}
+```
+
+| Durum | `error` | Anlam |
+|---|---|---|
+| 400 | `invalid_request` | gövde bozuk veya `receiptDate` RFC3339 değil |
+| 401 | `unauthorized` | oturum yok veya kullanıcı satırı silinmiş |
+| 422 | `invalid_receipt` | alan doğrulaması başarısız (negatif tutar, bilinmeyen kategori, gelecek tarih vb.) |
+
+### Sağlık uçları
+
+`GET /healthz` (liveness) ve `GET /readyz` (veritabanı erişilebilirliği, Render health check için `/healthz`).
+
+## Yapay Zekâ Servisi
+
+`AI_PROVIDER` ile iki sağlayıcı desteklenir. Varsayılan `gemini`'dir.
+
+| Değişken | Varsayılan | Açıklama |
+|---|---|---|
+| `AI_PROVIDER` | `gemini` | `gemini` veya `openai` |
+| `GEMINI_API_KEY` | — | `AI_PROVIDER=gemini` iken **zorunlu** |
+| `GEMINI_MODEL` | `gemini-3.8-flash` | Flash katmanı fiyat/performans dengesi için tercih edilir |
+| `OPENAI_API_KEY` | — | `AI_PROVIDER=openai` iken **zorunlu** |
+| `OPENAI_MODEL` | `gpt-4o` | |
+| `MAX_SCAN_IMAGE_BYTES` | `8388608` (8 MB) | gövde ve görsel sınırı |
+| `SCAN_TIMEOUT` | `45s` | AI çağrısı zaman aşımı |
+
+Eksik anahtar sunucuyu **başlangıçta** durdurur (`config.Load` hata döner); üretimde ilk fiş
+denemesinde 500 almak yerine deploy'un başarısız görünmesi tercih edilir.
+
+**Gemini API notu:** Gemini, eski `:generateContent` uç noktası yerine
+`https://generativelanguage.googleapis.com/v1beta/interactions` uç noktasını kullanır ve
+model çıktısı `steps[].content[]` içinde döner. Ayrıca Gemini 3.6+ modeller `temperature`,
+`top_p` ve `top_k` değerlerini yok sayıp uyarı başlığı döndürür; bu yüzden istekte hiç
+örnekleme parametresi gönderilmez, determinizm JSON Schema'dan gelir.
+
+**Çıkarım ve doğrulama akışı:**
+
+1. Görsel doğrulaması — MIME tipi **baş baytlardan** belirlenir (istemcinin gönderdiği
+   `Content-Type`'a güvenilmez), boyut sınırı uygulanır, JPEG/PNG için decode edilerek
+   bozuk dosyalar elenir.
+2. Prompt + JSON Schema — kategori enum'u Go sabitlerinden üretilir, bu yüzden prompt,
+   uygulama ve veritabanı CHECK kısıtı ayrışamaz.
+3. Toleranslı ayrıştırma — model alan adlarında `camelCase`/`snake_case`/`Is_Receipt`
+   farkına takılabilir; anahtarlar normalize edilir. `"1.234,56"` gibi Avrupa biçimi
+   tutarlar da kabul edilir.
+4. Alan doğrulaması — tutar `>= 0`, para birimi ISO 4217, kategori kanonik listede,
+   tarih makul aralıkta. **AI ne döndürürse döndürsün veritabanına yazılamaz.**
+
+## Yerel Çalıştırma
+
+```bash
+cd backend
+cp .env.example .env      # DATABASE_URL, JWT_SECRET ve GEMINI_API_KEY'i doldurun
+go run ./cmd/api
+```
+
+```bash
+go test ./...             # birim + handler entegrasyon testleri
+go vet ./...
+
+# Gerçek PostgreSQL'e karşı uçtan uca test (migration + INSERT + kısıtlar)
+DATABASE_URL="postgres://user:pass@localhost:5432/fatura?sslmode=disable" \
+  go test ./internal/httpapi/handlers -run Postgres -v
+```
+
+## Render'a Deploy
+
+1. Repo'yu GitHub'a gönderin.
+2. Render Dashboard → **New → Blueprint** → repo'yu seçin; `render.yaml` web servisi ve
+   PostgreSQL'i birlikte oluşturur.
+3. Dashboard'da **GOOGLE_CLIENT_IDS**, **APPLE_CLIENT_IDS**, **ALLOWED_ORIGINS** ve
+   **GEMINI_API_KEY** değerlerini girin. `DATABASE_URL` ve `JWT_SECRET` otomatik oluşturulur.
+4. Google Cloud Console → OAuth 2.0 Client ID'lerinden **Web client ID** (iOS client ID) ve
+   Apple Developer → **Services ID** değerlerini yukarıya yazın.
+5. [Google AI Studio](https://aistudio.google.com/apikey) → **Create API key** → üretilen
+   anahtarı `GEMINI_API_KEY` olarak yapıştırın. (Anahtarı Render'a yazmadan önce
+   `GEMINI_API_KEY` değerini **Render Dashboard → Environment** ekranında girmeniz gerekir.)
+6. Sağlayıcı panolarına backend URL'sini yetkili redirect/origin olarak ekleyin.
+7. `receipts` migration'ı servis ilk açılışta otomatik çalışır; ek bir işlem gerekmez.
+
+> Render'da `REQUEST_TIMEOUT` değerini yükseltmeniz **gerekmez**: sunucunun yazma zaman aşımı
+> `SCAN_TIMEOUT + 5s` olarak otomatik hesaplanır (`config.EffectiveWriteTimeout`).
+> Render free plan'ın idle timeout'u düşük olduğu için üretimde `starter` plan önerilir.
+
+## Mobil Taraf
+
+```bash
+cd mobile
+cp .env.example .env
+npm install \
+  @react-native-google-signin/google-signin \
+  @invertase/react-native-apple-authentication \
+  expo-crypto expo-secure-store
+```
+
+`EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID` her iki platformda, `EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID` iOS'ta
+gerekli olur. Backend'in `GOOGLE_CLIENT_IDS` değeri, cihazda kullandığınız client ID ile **birebir aynı**
+olmalıdır; aksi halde `aud` kontrolü token'ı reddeder.
+
+Kullanım:
+
+```tsx
+const { user, isLoading, signInWithGoogle, signInWithApple, signOut } = useSession();
+```
+
+## Güvenlik Notları
+
+- Sağlayıcı token'ları backend'de doğrulanır; istemciden gelen hiçbir `sub`/`email` değerine güvenilmez.
+- Google için `iss`, `exp` ve `aud`/`azp` (izinli client ID listesi) kontrolü yapılır; `email_verified` zorunludur.
+- Apple için imza Apple JWKS ile doğrulanılır, `iss`, `aud` (bundle ID / Services ID), `exp` ve
+  **nonce** eşleşmesi kontrol edilir; bilinmeyen `kid` geldiğinde anahtarlar otomatik yenilenir.
+- Oturum JWT'si HS256 ile imzalanır; `JWT_SECRET` en az 32 bayt olmalı, prod'da Render tarafından üretilir.
+- Middleware imza algoritmasını açıkça HS256 ile sınırlar (`alg: none` / algoritma karıştırma saldırısına kapalı).
+- JSON gövde boyutu 16 KB ile sınırlı, bilinmeyen JSON alanları reddedilir.
+- Fiş görselleri 8 MB ve 12 MB (base64 sarmalayıcı) ile sınırlı; MIME tipi istemciden değil
+  dosyanın baş baytlarından belirlenir, AI'ya gönderilmeden decode edilerek bozuk dosyalar elenir.
+- `receipts.user_id` JWT'den çözülür; istemcinin gönderdiği kullanıcı kimliği yok sayılır.
+- AI çıktısı istemciye onay için döner, veritabanına doğrudan yazılmaz; `confirm` isteğinde
+  alanlar yeniden doğrulanır (domain katmanı + veritabanı CHECK kısıtı).
+- AI anahtarı yalnızca sunucu ortam değişkenlerinde tutulur, loglara yazılmaz.
+- Sağlayıcı hatalarında 429 ve 5xx için üç denemeli kısa geri çekilme; 4xx'te tek deneme.
+- Apple özel relay e-posta adresleri (`*@privaterelay.appleid.com`) normal kullanıcı e-postası gibi saklanır.
+
+### Bilinen tasarım kararları
+
+- `users.provider` tek kolon olduğu için bir e-posta hem Google hem Apple ile giriş yaparsa ikinci
+  giriş `409 email_conflict` ile reddedilir. Çoklu sağlayıcı bağlama istenirse `provider` kolonu
+  ayrı bir `user_identities` tablosuna taşınmalıdır; bu ADIM'ın kapsamı dışında tutuldu.
+- **Görsel sunucuda saklanmıyor.** `local_image_path` cihaza özgüdür; cihaz değişirse
+  geçersizleşir. Üçüncü taraf birden fazla cihazı desteklemek ise ayrı bir yükleme servisi
+  (S3/R2 gibi) gerektirir ve ek maliyet getirir; bilinçli olarak bu ADIM'ın dışında bırakıldı.
+- **`taxNumber` yalnızca scan yanıtında döner, `receipts` tablosunda saklanmaz.** Bu ADIM'ın
+  tabloda istenen kolonlar listesinde yoktu; alanı sonradan eklemek `ALTER TABLE` gerektirir.
+- **Tutar `float64` taşınır, `NUMERIC(12,2)` yazılır.** Fiş tutarları iki ondalıklı olduğu için
+  bu güvenli kabul edilmiştir; hassas para aritmetiği gerekirse `shopspring/decimal` eklenmelidir.
+- **Fiş tarihi gün ortasına sabitlenir** (12:00 UTC). Saat bilgisi yoksa gece yarısına
+  yakın UTC dönüşümleri tarihi bir gün kaydırabiliyordu.
+- **Tek tıklamalı kayıt yok.** `scan` ve `confirm` ayrıdır; AI çıkarımı ile kalıcı kayıt arasında
+  kullanıcının onayı vardır. Bu, yanlış okunan fişlerin veritabanına girilmesini engeller.
+
+## ADIM 3 için bırakılan noktalar
+
+- Mobil taraf: `scanReceipt()` / `confirmReceipt()` servisleri ve onay ekranı
+- `GET /api/v1/receipts` listeleme uçları (aylık kategori dökümü için indeksler hazır)
+- Fiş görseli kırpma/iyileştirme (AI'ya göndermeden önce EXIF temizleme, yeniden boyutlandırma)
+- `accountant_email` üzerinden muhasebeci davet akışı
+- Refresh token tablosu ve token yenileme (`POST /api/v1/auth/refresh`)
+- Hız limiti (kullanıcı başına günlük tarama sayısı) — AI maliyetini korumak için

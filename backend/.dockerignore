@@ -1,0 +1,7 @@
+.git
+.gitignore
+.env
+.env.local
+Dockerfile
+README.md
+**/*_test.go
