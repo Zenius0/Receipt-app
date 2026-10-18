@@ -1,0 +1,51 @@
+{
+  "expo": {
+    "name": "Fatura Takipçi",
+    "slug": "receipt-app",
+    "scheme": "fatura",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.selim.fatura",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Fiş fotoğrafı çekmek için kamera erişimi gerekir.",
+        "NSPhotoLibraryUsageDescription": "Galeriden fiş fotoğrafı seçmek için erişim gerekir."
+      }
+    },
+    "android": {
+      "package": "com.selim.fatura",
+      "adaptiveIcon": {
+        "backgroundColor": "#FFFFFF",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "permissions": [
+        "android.permission.CAMERA"
+      ],
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Galeriden fiş fotoğrafı seçmek için erişim gerekir.",
+          "cameraPermission": "Fiş fotoğrafı çekmek için kamera erişimi gerekir."
+        }
+      ],
+      [
+        "expo-secure-store",
+        {
+          "configureAndroidBackup": true,
+          "faceIDPermission": "Giriş bilgilerinizi güvenle saklamak için Face ID kullanılır."
+        }
+      ]
+    ]
+  }
+}

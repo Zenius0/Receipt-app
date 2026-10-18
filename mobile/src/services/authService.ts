@@ -1,155 +1,189 @@
 import AppleAuthentication from '@invertase/react-native-apple-authentication';
-import {
-  configure,
-  getTokens,
-  signIn as googleSignIn,
-  signOut as googleSignOut,
-} from '@react-native-google-signin/google-signin';
+import { GoogleSignin, isErrorWithCode, statusCodes } from '@react-native-google-signin/google-signin';
 import * as Crypto from 'expo-crypto';
 import * as SecureStore from 'expo-secure-store';
+import { Platform } from 'react-native';
 
 import { ApiError, authApi } from '../api/client';
 import type { AuthUser, Session } from '../api/types';
 import { env } from '../config/env';
 
-let configured = false;
-
 export class AuthError extends Error {
-  constructor(message: string, readonly code: string) {
+  constructor(message: string) {
     super(message);
     this.name = 'AuthError';
   }
 }
 
-export const authService = {
-  configure(): void {
-    if (configured) {
-      return;
+let configured = false;
+
+/**
+ * Google girişini hazırlar.
+ *
+ * @react-native-google-signin/google-signin v16'da isimlendirilmiş fonksiyon
+ * ihraçları kaldırıldı; tüm API tek bir GoogleSignin nesnesinde toplandı.
+ */
+function ensureGoogleConfigured(): void {
+  if (configured) return;
+
+  GoogleSignin.configure({
+    // iOS ve Android aynı Web Client ID kullanır; mobil kütüphaneler
+    // Google'ın önerdiği bu yaklaşımı uygular.
+    webClientId: env.googleWebClientId,
+    iosClientId: env.googleIosClientId || env.googleWebClientId,
+    offlineAccess: false,
+  });
+
+  configured = true;
+}
+
+async function signInWithGoogleProvider(): Promise<Session> {
+  if (!env.googleWebClientId && !env.googleIosClientId) {
+    throw new AuthError(
+      'Google girişi yapılandırılmamış. EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID değerini .env dosyanıza ekleyin.',
+    );
+  }
+
+  ensureGoogleConfigured();
+
+  try {
+    await GoogleSignin.hasPlayServices();
+  } catch {
+    // hasPlayServices yalnızca Android'de anlamlıdır; yoksa sessizce geç.
+  }
+
+  const response = await GoogleSignin.signIn();
+
+  if (response.type !== 'success') {
+    if (response.type === 'cancelled') {
+      throw new AuthError('Giriş iptal edildi.');
     }
+    throw new AuthError('Google girişi tamamlanamadı.');
+  }
 
-    configure({
-      webClientId: env.googleWebClientId,
-      iosClientId: env.googleIosClientId,
-    });
-    configured = true;
-  },
+  // v16 yanıtı doğrudan idToken taşıyor; sürüm farklılıklarında getTokens'e düşüyoruz.
+  let idToken = response.data.idToken;
+  if (!idToken) {
+    idToken = (await GoogleSignin.getTokens()).idToken;
+  }
+  if (!idToken) {
+    throw new AuthError('Google kimlik belirteci alınamadı.');
+  }
 
-  async signInWithGoogle(): Promise<Session> {
-    this.configure();
+  return authApi.signIn('google', {
+    token: idToken,
+    name: response.data.user?.name ?? undefined,
+  });
+}
 
-    const { error } = await googleSignIn();
-    if (error) {
-      throw new AuthError('Google girişi tamamlanamadı', 'google_cancelled');
-    }
+async function signInWithAppleProvider(): Promise<Session> {
+  if (Platform.OS === 'android') {
+    throw new AuthError(
+      'Apple ile giriş yalnızca iOS’ta kullanılabilir. Lütfen Google ile devam edin.',
+    );
+  }
 
-    const { data, error: tokenError } = await getTokens();
-    if (tokenError || !data?.idToken) {
-      throw new AuthError('Google kimlik tokenı alınamadı', 'google_token_failed');
-    }
+  // isSupported bir fonksiyon değil, doğrudan okunan bir özelliktir.
+  if (!AppleAuthentication.isSupported) {
+    throw new AuthError('Bu cihazda Apple ile giriş desteklenmiyor.');
+  }
 
-    const session = await authApi.signIn('google', { token: data.idToken });
-    await persistSession(session);
-    return session;
-  },
+  // Apple nonce istiyor: cihazda üretip backend'e aynen gönderiyoruz.
+  const rawNonce = Crypto.randomUUID();
+  const hashedNonce = await Crypto.digestStringAsync(
+    Crypto.CryptoDigestAlgorithm.SHA256,
+    rawNonce,
+  );
 
-  async signInWithApple(): Promise<Session> {
-    const available = await AppleAuthentication.isSupportedAsync();
-    if (!available) {
-      throw new AuthError('Bu cihazda Apple girişi kullanılamıyor', 'apple_unsupported');
-    }
-
-    const rawNonce = generateNonce();
-    const hashedNonce = await sha256(rawNonce);
-
-    const credential = await AppleAuthentication.signInAsync({
+  try {
+    const credential = await AppleAuthentication.performRequest({
       nonce: hashedNonce,
       requestedScopes: [
-        AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
-        AppleAuthentication.AppleAuthenticationScope.EMAIL,
+        AppleAuthentication.Scope.FULL_NAME,
+        AppleAuthentication.Scope.EMAIL,
       ],
     });
 
     if (!credential.identityToken) {
-      throw new AuthError('Apple kimlik tokenı alınamadı', 'apple_token_failed');
+      throw new AuthError('Apple kimlik belirteci alınamadı.');
     }
 
-    const fullName = [credential.fullName?.givenName, credential.fullName?.familyName]
-      .filter(Boolean)
-      .join(' ');
+    const { fullName } = credential;
 
-    const session = await authApi.signIn('apple', {
+    return authApi.signIn('apple', {
       token: credential.identityToken,
+      // Apple fullName'i yalnızca ilk yetkilendirmede döner; bu yüzden
+      // backend'e istemciden iletmemiz gerekiyor.
+      name: fullName ? `${fullName.givenName ?? ''} ${fullName.familyName ?? ''}`.trim() : undefined,
       nonce: rawNonce,
-      name: fullName.length > 0 ? fullName : undefined,
     });
-    await persistSession(session);
+  } catch (error) {
+    if (error instanceof AuthError) throw error;
+    if (isErrorWithCode(error) && error.code === statusCodes.IN_PROGRESS) {
+      throw new AuthError('Apple girişi zaten sürüyor.');
+    }
+    if (isErrorWithCode(error) && error.code === statusCodes.SIGN_IN_CANCELLED) {
+      throw new AuthError('Giriş iptal edildi.');
+    }
+    throw new AuthError('Apple ile giriş yapılamadı.');
+  }
+}
 
-    return session;
-  },
+const decodeJwt = (token: string): Record<string, unknown> | null => {
+  try {
+    const [, payload] = token.split('.');
+    if (!payload) return null;
+    const normalized = payload.replace(/-/g, '+').replace(/_/g, '/');
+    return JSON.parse(atob(normalized));
+  } catch {
+    return null;
+  }
+};
 
+export const authService = {
+  signInWithGoogle: signInWithGoogleProvider,
+  signInWithApple: signInWithAppleProvider,
+
+  /** Oturumu güvenli depodan geri yükler; süresi dolmuşsa null döner. */
   async restoreSession(): Promise<Session | null> {
     const raw = await SecureStore.getItemAsync(env.sessionStorageKey);
-    if (!raw) {
-      return null;
-    }
-
-    const session = parseSession(raw);
-    if (!session || new Date(session.expiresAt).getTime() <= Date.now()) {
-      await this.signOut();
-      return null;
-    }
+    if (!raw) return null;
 
     try {
-      const user = await authApi.me(session.token);
-      const restored: Session = { ...session, user };
-      await persistSession(restored);
-      return restored;
-    } catch (error) {
-      if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
-        await this.signOut();
+      const session = JSON.parse(raw) as Session;
+
+      const claims = decodeJwt(session.token);
+      const exp = typeof claims?.exp === 'number' ? claims.exp : 0;
+      // 60 saniye pay bırakılır: istek uçarken token süresi dolmasın.
+      if (!exp || Date.now() >= exp * 1000 - 60_000) {
+        await SecureStore.deleteItemAsync(env.sessionStorageKey);
         return null;
       }
-      throw error;
-    }
-  },
 
-  async currentUser(): Promise<AuthUser | null> {
-    const session = await this.restoreSession();
-    return session?.user ?? null;
+      return session;
+    } catch {
+      await SecureStore.deleteItemAsync(env.sessionStorageKey);
+      return null;
+    }
   },
 
   async signOut(): Promise<void> {
     await SecureStore.deleteItemAsync(env.sessionStorageKey);
 
+    // Google oturumu cihazda açık kalmasın.
     try {
-      await googleSignOut();
+      ensureGoogleConfigured();
+      await GoogleSignin.signOut();
     } catch {
-      return;
+      // Google yapılandırılmadıysa sorun değil.
     }
+  },
+
+  /** Oturum token'ını başlıklara eklemek için dışa açar. */
+  async currentToken(): Promise<string | null> {
+    const session = await authService.restoreSession();
+    return session?.token ?? null;
   },
 };
 
-async function persistSession(session: Session): Promise<void> {
-  await SecureStore.setItemAsync(env.sessionStorageKey, JSON.stringify(session), {
-    keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
-  });
-}
-
-function parseSession(raw: string): Session | null {
-  try {
-    return JSON.parse(raw) as Session;
-  } catch {
-    return null;
-  }
-}
-
-function generateNonce(length = 32): string {
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  const bytes = new Uint8Array(length);
-  Crypto.getRandomValues(bytes);
-  return Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join('');
-}
-
-function sha256(value: string): Promise<string> {
-  return Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, value);
-}
+export type { AuthUser };
