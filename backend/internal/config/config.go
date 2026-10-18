@@ -61,11 +61,12 @@ func Load() (Config, error) {
 	if len(cfg.JWTSecret) < 32 {
 		return Config{}, errors.New("config: JWT_SECRET must be at least 32 bytes")
 	}
-	if len(cfg.GoogleClientIDs) == 0 {
-		return Config{}, errors.New("config: GOOGLE_CLIENT_IDS is required (comma separated)")
-	}
-	if len(cfg.AppleClientIDs) == 0 {
-		return Config{}, errors.New("config: APPLE_CLIENT_IDS is required (comma separated)")
+	// Apple Developer üyeliği yıllık ücretli olduğu için Apple kimliği zorunlu
+	// tutulmaz: en az bir giriş sağlayıcısı yapılandırılmış olmalıdır.
+	// Yapılandırılmayan sağlayıcının ucu 404 unsupported_provider döner ve
+	// mobil istemci o giriş butonunu göstermez.
+	if len(cfg.GoogleClientIDs) == 0 && len(cfg.AppleClientIDs) == 0 {
+		return Config{}, errors.New("config: at least one of GOOGLE_CLIENT_IDS or APPLE_CLIENT_IDS is required")
 	}
 	if cfg.AccessTokenTTL > 30*24*time.Hour {
 		return Config{}, errors.New("config: ACCESS_TOKEN_TTL must not exceed 720h")

@@ -48,14 +48,15 @@ func run() error {
 		return err
 	}
 
-	appleVerifier, err := auth.NewAppleVerifier(ctx, cfg.AppleClientIDs, "")
+	// Yalnızca yapılandırılmış sağlayıcılar kayıt altına alınır. Apple
+	// Developer üyeliği ücretli olduğu için Apple kimliği olmadan da Google
+	// ile giriş yapılabilir; Apple ucu yapılandırılmamışsa 404 döner.
+	verifiers, err := buildVerifiers(ctx, cfg)
 	if err != nil {
 		return err
 	}
-
-	googleVerifier, err := auth.NewGoogleVerifier(cfg.GoogleClientIDs, "")
-	if err != nil {
-		return err
+	for _, verifier := range verifiers {
+		logger.Info("auth provider enabled", slog.String("provider", verifier.Provider()))
 	}
 
 	tokenIssuer, err := auth.NewTokenIssuer(cfg.JWTSecret, cfg.AccessTokenTTL)
@@ -65,7 +66,7 @@ func run() error {
 
 	userRepository := pgstore.NewUserRepository(pool)
 
-	authService, err := auth.NewService(userRepository, tokenIssuer, googleVerifier, appleVerifier)
+	authService, err := auth.NewService(userRepository, tokenIssuer, verifiers...)
 	if err != nil {
 		return err
 	}
@@ -158,4 +159,29 @@ func newScanner(cfg config.Config) (ai.Scanner, error) {
 	default:
 		return ai.NewGeminiScanner(cfg.GeminiAPIKey, cfg.GeminiModel, cfg.ScanTimeout)
 	}
+}
+
+// buildVerifiers, ortam değişkenlerinde tanımlı giriş sağlayıcılarını kurar.
+// Kimlik verisi verilmemiş sağlayıcı sessizce atlanır; auth.Service o sağlayıcıya
+// gelen istekleri unsupported_provider ile reddeder.
+func buildVerifiers(ctx context.Context, cfg config.Config) ([]auth.Verifier, error) {
+	verifiers := make([]auth.Verifier, 0, 2)
+
+	if len(cfg.GoogleClientIDs) > 0 {
+		verifier, err := auth.NewGoogleVerifier(cfg.GoogleClientIDs, "")
+		if err != nil {
+			return nil, err
+		}
+		verifiers = append(verifiers, verifier)
+	}
+
+	if len(cfg.AppleClientIDs) > 0 {
+		verifier, err := auth.NewAppleVerifier(ctx, cfg.AppleClientIDs, "")
+		if err != nil {
+			return nil, err
+		}
+		verifiers = append(verifiers, verifier)
+	}
+
+	return verifiers, nil
 }
