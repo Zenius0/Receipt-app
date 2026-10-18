@@ -372,6 +372,63 @@ DATABASE_URL="postgres://user:pass@localhost:5432/fatura?sslmode=disable" \
   go test ./internal/httpapi/handlers -run Postgres -v
 ```
 
+## Yerel Geliştirme
+
+Günlük akış tek komut: **`make setup`** (bir kere), sonra **`make run`**.
+
+```bash
+make setup   # backend/.env üretir + Docker ile PostgreSQL'i başlatır
+make run     # API'yi localhost:8080'de çalıştırır (migration otomatik)
+```
+
+`make run` ayrı bir terminalde açık kalsın. Mobil uygulama veya curl ile
+`http://localhost:8080` adresine bağlanın.
+
+```bash
+curl http://localhost:8080/healthz   # {"status":"ok"}
+curl http://localhost:8080/readyz    # {"status":"ready"}
+```
+
+### Tüm komutlar
+
+| Komut | Ne yapar |
+|---|---|
+| `make help` | Komut listesi |
+| `make setup` | Sıfırdan kurulum (`.env` + veritabanı) |
+| `make run` | API'yi çalıştır |
+| `make test` | Tüm testler |
+| `make test-postgres` | Gerçek PostgreSQL'e karşı uçtan uca test |
+| `make vet` / `make fmt` | Statik kontrol / biçimlendirme |
+| `make check` | CI kontrolü (vet + gofmt + test) |
+| `make db-shell` | `psql` ile veritabanına gir |
+| `make db-logs` | PostgreSQL loglarını izle |
+| `make db-down` | Veritabanını durdur (veriler korunur) |
+| `make db-reset` | Veriyi sil, sıfırdan kur |
+
+### Veritabanı
+
+`docker-compose.yml` PostgreSQL'i **port 5433**'te açar (Homebrew ile kurulu
+yerel postgres'iniz 5432'de çalışıyorsa çakışmaz). Migration'lar servis başlarken
+otomatik çalışır — `users` ve `receipts` tablolarını elle kurmanıza gerek yok.
+
+Docker kullanmak istemiyorsanız `backend/.env` içindeki `DATABASE_URL`'i kendi
+PostgreSQL'inize göre ayarlamanız yeterli.
+
+### Editörde çalıştırma
+
+VS Code kullanıyorsanız terminal yerine **Tasks** ile de çalıştırabilirsiniz.
+En pratik yol: VS Code'un entegre terminalinde `make run` — dosya değişikliği
+algılandığında `go run` yeniden derler, ayrı bir build komutu gerekmez.
+
+### Production'ı yerelde denetleme
+
+Render'a push etmeden önce Docker imajını yerelde deneyebilirsiniz:
+
+```bash
+make build            # production binary (11 MB, statik)
+cd backend && ./bin/api
+```
+
 ## Render'a Deploy
 
 1. Repo'yu GitHub'a gönderin.

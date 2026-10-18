@@ -1,0 +1,26 @@
+# Yerel geliştirme için PostgreSQL.
+# Render'daki veritabanını kullanmayın — yerelde aynı şemayı çalıştırır,
+# migration'lar aynı dosyadan uygulanır.
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: fatura-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: fatura
+      POSTGRES_PASSWORD: fatura
+      POSTGRES_DB: fatura
+    ports:
+      # 5433: Homebrew ile kurulu yerel postgres'iniz 5432'de çalışıyorsa
+      # çakışma olmaz. Tamamen boş isterseniz "5433:5432" satırını silin.
+      - "5433:5432"
+    volumes:
+      - fatura-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fatura -d fatura"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  fatura-pgdata:

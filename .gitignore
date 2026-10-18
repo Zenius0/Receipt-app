@@ -24,3 +24,5 @@ mobile/android/app/build/
 *.keystore
 GoogleService-Info.plist
 GoogleService-Info.json
+
+bin/
