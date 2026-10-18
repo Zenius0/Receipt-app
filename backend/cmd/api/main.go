@@ -14,7 +14,9 @@ import (
 	"github.com/selim/fatura-backend/internal/auth"
 	"github.com/selim/fatura-backend/internal/config"
 	"github.com/selim/fatura-backend/internal/httpapi"
+	"github.com/selim/fatura-backend/internal/middleware"
 	"github.com/selim/fatura-backend/internal/platform/db"
+	"github.com/selim/fatura-backend/internal/ratelimit"
 	"github.com/selim/fatura-backend/internal/receipts"
 	"github.com/selim/fatura-backend/internal/store/pgstore"
 )
@@ -93,6 +95,8 @@ func run() error {
 			ReceiptService: receiptService,
 			AllowedOrigins: cfg.AllowedOrigins,
 			MaxScanImage:   cfg.MaxScanImageSize,
+			RateLimit:      middleware.NewRateLimit(ratelimit.New(cfg.RequestsPerMinute, time.Minute), logger),
+			ScanQuota:      middleware.NewScanQuota(ratelimit.New(cfg.ScansPerDay, 24*time.Hour), logger),
 			ReadinessCheck: func() error {
 				pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 				defer cancel()

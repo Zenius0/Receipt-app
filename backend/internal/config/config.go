@@ -30,6 +30,11 @@ type Config struct {
 	OpenAIModel      string
 	ScanTimeout      time.Duration
 	MaxScanImageSize int
+
+	// Hız limitleri. 0 değeri limitin kapalı olduğu anlamına gelir
+	// (geliştirme veya test ortamı için).
+	RequestsPerMinute int
+	ScansPerDay       int
 }
 
 func Load() (Config, error) {
@@ -46,13 +51,15 @@ func Load() (Config, error) {
 		GoogleClientIDs:   getList("GOOGLE_CLIENT_IDS"),
 		AppleClientIDs:    getList("APPLE_CLIENT_IDS"),
 
-		AIProvider:       strings.ToLower(getString("AI_PROVIDER", "gemini")),
-		GeminiAPIKey:     strings.TrimSpace(os.Getenv("GEMINI_API_KEY")),
-		GeminiModel:      getString("GEMINI_MODEL", "gemini-3.8-flash"),
-		OpenAIAPIKey:     strings.TrimSpace(os.Getenv("OPENAI_API_KEY")),
-		OpenAIModel:      getString("OPENAI_MODEL", "gpt-4o"),
-		ScanTimeout:      getDuration("SCAN_TIMEOUT", 45*time.Second),
-		MaxScanImageSize: getInt("MAX_SCAN_IMAGE_BYTES", 8<<20),
+		AIProvider:        strings.ToLower(getString("AI_PROVIDER", "gemini")),
+		GeminiAPIKey:      strings.TrimSpace(os.Getenv("GEMINI_API_KEY")),
+		GeminiModel:       getString("GEMINI_MODEL", "gemini-3.8-flash"),
+		OpenAIAPIKey:      strings.TrimSpace(os.Getenv("OPENAI_API_KEY")),
+		OpenAIModel:       getString("OPENAI_MODEL", "gpt-4o"),
+		ScanTimeout:       getDuration("SCAN_TIMEOUT", 45*time.Second),
+		MaxScanImageSize:  getInt("MAX_SCAN_IMAGE_BYTES", 8<<20),
+		RequestsPerMinute: getInt("RATE_LIMIT_PER_MINUTE", 120),
+		ScansPerDay:       getInt("SCAN_DAILY_LIMIT", 50),
 	}
 
 	if cfg.DatabaseURL == "" {

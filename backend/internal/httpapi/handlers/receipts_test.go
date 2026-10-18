@@ -79,15 +79,13 @@ type harness struct {
 	repo    *stubRepo
 }
 
-func newHarness(t *testing.T) *harness {
+// harness, JWT korumalı gerçek router ile çalışan test çerçevesidir.
+// configure verilirse Dependencies değiştirilir (ör. rate limit takmak için).
+func newHarness(t *testing.T, configure ...func(*httpapi.Dependencies)) *harness {
 	t.Helper()
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-
-	issuer, err := auth.NewTokenIssuer([]byte(strings.Repeat("k", 48)), time.Hour)
-	if err != nil {
-		t.Fatalf("NewTokenIssuer: %v", err)
-	}
+	logger := discardLogger()
+	issuer := testIssuer(t)
 
 	user := store.User{
 		ID:       uuid.MustParse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
@@ -107,19 +105,40 @@ func newHarness(t *testing.T) *harness {
 		t.Fatalf("NewService: %v", err)
 	}
 
+	deps := httpapi.Dependencies{
+		Logger:         logger,
+		TokenIssuer:    issuer,
+		ReceiptService: service,
+		MaxScanImage:   ai.MaxImageBytes,
+	}
+	for _, fn := range configure {
+		fn(&deps)
+	}
+
 	return &harness{
-		server: httpapi.NewRouter(httpapi.Dependencies{
-			Logger:         logger,
-			TokenIssuer:    issuer,
-			ReceiptService: service,
-			MaxScanImage:   ai.MaxImageBytes,
-		}),
+		server:  httpapi.NewRouter(deps),
 		token:   token,
 		user:    user,
 		scanner: scanner,
 		repo:    repo,
 	}
 }
+
+func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+func testIssuer(t *testing.T) *auth.TokenIssuer {
+	t.Helper()
+
+	issuer, err := auth.NewTokenIssuer([]byte(strings.Repeat("k", 48)), time.Hour)
+	if err != nil {
+		t.Fatalf("NewTokenIssuer: %v", err)
+	}
+	return issuer
+}
+
+func nowUTC() time.Time { return time.Now().UTC() }
+
+func stringReader(s string) io.Reader { return strings.NewReader(s) }
 
 func (h *harness) do(t *testing.T, method, path, contentType string, body io.Reader, authenticated bool) *httptest.ResponseRecorder {
 	t.Helper()
@@ -137,6 +156,9 @@ func (h *harness) do(t *testing.T, method, path, contentType string, body io.Rea
 
 	return rec
 }
+
+// header, yanıt başlığını okur.
+func header(rec *httptest.ResponseRecorder, name string) string { return rec.Header().Get(name) }
 
 func multipartBody(t *testing.T, field, filename string, data []byte) (io.Reader, string) {
 	t.Helper()

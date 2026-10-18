@@ -41,6 +41,11 @@ services:
         value: 8388608
       - key: SCAN_TIMEOUT
         value: 45s
+      # Hız limitleri: IP basina dakikalik istek + kullanici basina gunluk tarama
+      - key: RATE_LIMIT_PER_MINUTE
+        value: 120
+      - key: SCAN_DAILY_LIMIT
+        value: 50
 
 databases:
   - name: fatura-db

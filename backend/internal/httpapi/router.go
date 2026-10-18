@@ -18,6 +18,9 @@ type Dependencies struct {
 	ReceiptService *receipts.Service
 	AllowedOrigins []string
 	MaxScanImage   int
+	// RateLimit ve ScanQuota nil ise o koruma kapalıdır (test/geliştirme).
+	RateLimit      *middleware.RateLimit
+	ScanQuota      *middleware.ScanQuota
 	ReadinessCheck func() error
 }
 
@@ -54,18 +57,41 @@ func NewRouter(deps Dependencies) http.Handler {
 	if deps.ReceiptService != nil {
 		receiptHandler := handlers.NewReceiptHandler(deps.ReceiptService, logger, deps.MaxScanImage)
 
-		mux.Handle("POST /api/v1/receipts/scan", authMiddleware.Require(http.HandlerFunc(receiptHandler.Scan)))
+		// Sıralama önemlidir:
+		//   1) JWT guard DIŞTA — oturum doğrulanır ve kullanıcı kimliği
+		//      request context'ine yazılır.
+		//   2) Günlük tarama kotası İÇERİDE — kimliği context'ten okur ve
+		//      AI çağrısından hemen önce çalışır, böylece kota aşıldığında
+		//      ücret harcanmaz.
+		// Tersi (kota dışarıda) 401'e yol açar: context henüz doldurulmamıştır.
+		scan := http.Handler(http.HandlerFunc(receiptHandler.Scan))
+		if deps.ScanQuota != nil {
+			scan = deps.ScanQuota.Handler(scan)
+		}
+
+		mux.Handle("POST /api/v1/receipts/scan", authMiddleware.Require(scan))
 		mux.Handle("POST /api/v1/receipts/confirm", authMiddleware.Require(http.HandlerFunc(receiptHandler.Confirm)))
 		mux.Handle("GET /api/v1/receipts", authMiddleware.Require(http.HandlerFunc(receiptHandler.List)))
 	} else {
 		logger.Warn("receipt routes disabled: receipt service is not configured")
 	}
 
-	return middleware.Chain(
-		cors.Handler(mux),
+	// Middleware zinciri: Chain(handler, mw...) içte dışa sarar, yani
+	// listedeki ilk middleware en dışta çalışır.
+	middlewares := []func(http.Handler) http.Handler{
 		middleware.RequestID(),
 		middleware.RequestLogger(logger),
 		middleware.Recoverer(logger),
+	}
+	// Genel IP limiti en dış katmanda: oturum edinmeye çalışan botlar
+	// veritabanına veya yapay zekâya ulaşmadan elenir.
+	if deps.RateLimit != nil {
+		middlewares = append(middlewares, deps.RateLimit.Handler)
+	}
+	middlewares = append(middlewares,
 		middleware.SecurityHeaders,
+		cors.Handler,
 	)
+
+	return middleware.Chain(mux, middlewares...)
 }
