@@ -498,26 +498,52 @@ cd backend && ./bin/api
 > `SCAN_TIMEOUT + 5s` olarak otomatik hesaplanır (`config.EffectiveWriteTimeout`).
 > Render free plan'ın idle timeout'u düşük olduğu için üretimde `starter` plan önerilir.
 
-## Mobil Taraf
+## Hız Limitleri
+
+| Değişken | Varsayılan | Kapsam |
+|---|---|---|
+| `RATE_LIMIT_PER_MINUTE` | `120` | IP başına genel istek (kimlik doğrulama öncesi) |
+| `SCAN_DAILY_LIMIT` | `50` | Kullanıcı başına günlük fiş taraması |
+
+Günlük kota **JWT guard'ın içinde** ve AI çağrısından hemen önce çalışır; kota
+aşıldığında yapay zekâ çağrısı yapılmaz, dolayısıyla ücret harcanmaz. Kota
+dolduğunda `429 quota_exceeded` döner ve istekteki `Retry-After`,
+`X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset` başlıkları
+bulunur. `0` değeri limiti kapatır.
+
+Sayaçlar bellek içidir ve tek sunucu örneği varsayar. Birden fazla örneğe
+ölçeklenirse gerçek sınır `N × örnek sayısı` olur.
+
+## Mobil Uygulama
+
+Expo SDK 58 / React 19.3 / React Native 0.88.
 
 ```bash
 cd mobile
-cp .env.example .env
-npm install \
-  @react-native-google-signin/google-signin \
-  @invertase/react-native-apple-authentication \
-  expo-crypto expo-secure-store
+cp .env.example .env      # API adresi ve Google Client ID'yi doldurun
+npm install
+npx expo start            # QR kod basar
 ```
 
-`EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID` her iki platformda, `EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID` iOS'ta
-gerekli olur. Backend'in `GOOGLE_CLIENT_IDS` değeri, cihazda kullandığınız client ID ile **birebir aynı**
-olmalıdır; aksi halde `aud` kontrolü token'ı reddeder.
+**Çalıştırma seçenekleri:**
 
-Kullanım:
+| Yöntem | Ne zaman |
+|---|---|
+| **Expo Go + gerçek telefon** | En hızlı yol. Telefona Expo Go kurun, `npx expo start` ile QR okutun. |
+| **iOS Simulator** | macOS'ta Xcode yüklüyse `npx expo start --ios`. Kamera için "Photo Library" yükleme yeterli. |
+| Android emülatör | Android Studio (~10 GB) gerektirir; gerek yok. |
 
-```tsx
-const { user, isLoading, signInWithGoogle, signInWithApple, signOut } = useSession();
-```
+**`EXPO_PUBLIC_API_URL` ayarı:**
+
+- iOS Simulator / web → `http://localhost:8080`
+- **Gerçek telefon** → bilgisayarınızın LAN adresi: `ipconfig getifaddr en0`
+
+**Giriş akışı:** `Giriş → Ana ekran → Fiş Tara → Kamera → Onay ekranı → Kaydet → Liste`
+
+Tasarım kararı olarak AI çıktısı **asla doğrudan kaydedilmez**: kullanıcı
+onay ekranında her alanı görebilir ve düzeltebilir. Görsel AI'a gönderilmeden
+önce 1600 px'e küçültülür (3-5 MB → ~200 KB), hem yükleme hızı hem maliyet
+düşer.
 
 ## Güvenlik Notları
 
