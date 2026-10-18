@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -180,4 +181,172 @@ func TestReceiptFlow_Postgres(t *testing.T) {
 	// Temizlik
 	_, _ = pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, userID)
 	t.Log("postgres integration test passed")
+}
+
+// TestReceiptList_Postgres, liste ucunu gerçek PostgreSQL'e karşı doğrular:
+// kullanıcı izolasyonu, kategori ve tarih filtresi, sayfalama sırası.
+//
+//	go test ./internal/httpapi/handlers -run Postgres -v
+func TestReceiptList_Postgres(t *testing.T) {
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("DATABASE_URL is not set; skipping postgres integration test")
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ctx := context.Background()
+
+	pool, err := db.NewPool(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("db.NewPool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	if err := db.Migrate(ctx, pool); err != nil {
+		t.Fatalf("db.Migrate: %v", err)
+	}
+
+	// İki kullanıcı: biri diğerinin fişlerini GÖRMEMELİ.
+	owner := uuid.New()
+	stranger := uuid.New()
+	for _, id := range []uuid.UUID{owner, stranger} {
+		_, err := pool.Exec(ctx, `
+			INSERT INTO users (id, email, provider, provider_user_id)
+			VALUES ($1, $2, 'google', $3)
+			ON CONFLICT (provider, provider_user_id) DO UPDATE SET email = EXCLUDED.email`,
+			id, "list-test-"+id.String()+"@example.com", id.String())
+		if err != nil {
+			t.Fatalf("seed user: %v", err)
+		}
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM users WHERE id = ANY($1)`, []uuid.UUID{owner, stranger})
+	})
+
+	repo := pgstore.NewReceiptRepository(pool)
+
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	fixtures := []struct {
+		owner    uuid.UUID
+		store    string
+		amount   float64
+		category store.Category
+		age      int
+		// createdAt, test verisinin sıralamasını belirlenir kılmak için
+		// açıkça verilir. Gerçekte created_at saniye altı çakışabilir;
+		// o durumda id DESC devreye girer ve sayfalama kararlı kalır.
+		createdAt time.Time
+	}{
+		{owner, "Shell", 100, store.CategoryFuel, 1, time.Now().UTC().Add(-1 * time.Hour)},
+		{owner, "Migros", 200, store.CategoryGroceries, 2, time.Now().UTC().Add(-2 * time.Hour)},
+		{owner, "Bosch", 300, store.CategoryRepair, 3, time.Now().UTC().Add(-3 * time.Hour)},
+		{stranger, "BAKI Tesisat", 999, store.CategoryRepair, 1, time.Now().UTC()},
+	}
+	for _, f := range fixtures {
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO receipts (user_id, store_name, total_amount, currency, category, receipt_date, local_image_path, created_at)
+			VALUES ($1, $2, $3, 'TRY', $4, $5, NULL, $6)`,
+			f.owner, f.store, f.amount, string(f.category), today.AddDate(0, 0, -f.age), f.createdAt); err != nil {
+			t.Fatalf("seed receipt: %v", err)
+		}
+	}
+
+	// 1) Kullanıcı izolasyonu
+	all, err := repo.ListByUser(ctx, owner, store.ReceiptFilter{})
+	if err != nil {
+		t.Fatalf("ListByUser: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("owner fiş sayısı = %d, want 3 (yabancının fişi sızmamalı)", len(all))
+	}
+	for _, r := range all {
+		if r.UserID != owner {
+			t.Errorf("fiş %s kullanıcısı = %v, want %v", r.ID, r.UserID, owner)
+		}
+	}
+
+	strangerList, err := repo.ListByUser(ctx, stranger, store.ReceiptFilter{})
+	if err != nil {
+		t.Fatalf("ListByUser(stranger): %v", err)
+	}
+	if len(strangerList) != 1 {
+		t.Errorf("yabancı fiş sayısı = %d, want 1", len(strangerList))
+	}
+
+	// 2) Kategori filtresi (Türkçe alias normalize edilmeli)
+	fuel, err := repo.ListByUser(ctx, owner, store.ReceiptFilter{Category: store.Category("Yakıt")})
+	if err != nil {
+		t.Fatalf("ListByUser(category): %v", err)
+	}
+	if len(fuel) != 1 || fuel[0].StoreName != "Shell" {
+		t.Errorf("kategori filtresi = %d kayıt, want 1 (Shell)", len(fuel))
+	}
+
+	// 3) Tarih aralığı — "son 2 gün" Shell + Migros'u kapsamalı, Bosch'u değil
+	from := today.AddDate(0, 0, -2)
+	byDate, err := repo.ListByUser(ctx, owner, store.ReceiptFilter{From: &from, To: &today})
+	if err != nil {
+		t.Fatalf("ListByUser(dates): %v", err)
+	}
+	if len(byDate) != 2 {
+		t.Errorf("tarih filtresi = %d kayıt, want 2 (Shell + Migros)", len(byDate))
+	}
+
+	// 4) Sayfalama ve sıralama — en yeni önce
+	paged, err := repo.ListByUser(ctx, owner, store.ReceiptFilter{Limit: 2})
+	if err != nil {
+		t.Fatalf("ListByUser(limit): %v", err)
+	}
+	if len(paged) != 2 {
+		t.Fatalf("limit uygulanmadı: %d kayıt", len(paged))
+	}
+	if paged[0].StoreName != "Shell" || paged[1].StoreName != "Migros" {
+		t.Errorf("sıralama = %s, %s; want Shell, Migros (en yeni önce)", paged[0].StoreName, paged[1].StoreName)
+	}
+
+	// 5) Limit tavanı — istemci 5000 ister, sunucu 100 döner
+	capped, err := repo.ListByUser(ctx, owner, store.ReceiptFilter{Limit: 5000})
+	if err != nil {
+		t.Fatalf("ListByUser(cap): %v", err)
+	}
+	if len(capped) > store.MaxListLimit {
+		t.Errorf("limit tavanı uygulanmadı: %d", len(capped))
+	}
+
+	// 6) SQL injection denemesi — üç katmanlı savunmanın EN DIŞTAKI katmanı
+	// işe yarıyor: kategori beyaz listeden geçemediği için sorgu hiç
+	// çalıştırılmıyor. Parametreli sorgu ise ikinci savunmadır.
+	injected, err := repo.ListByUser(ctx, owner, store.ReceiptFilter{
+		Category: store.Category("fuel'; DROP TABLE receipts;--"),
+	})
+	if !errors.Is(err, store.ErrInvalidCategory) {
+		t.Errorf("injection girdisi hata vermeliydi, err = %v / %d kayıt", err, len(injected))
+	}
+
+	// Tablo sağlam mı?
+	var count int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM receipts`).Scan(&count); err != nil {
+		t.Fatalf("tablo düştü: %v", err)
+	}
+	if count < 4 {
+		t.Errorf("receipts satır sayısı = %d, want >= 4", count)
+	}
+
+	// 7) Yaklaşık toplam: 3 fiş var, ilk sayfa 2 → nextOffset işaret etmeli
+	service, err := receipts.NewService(repo, &stubScanner{}, logger)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	page, err := service.List(ctx, owner, receipts.ListInput{Limit: 2})
+	if err != nil {
+		t.Fatalf("service.List: %v", err)
+	}
+	if page.NextOffset == nil || *page.NextOffset != 2 {
+		t.Errorf("NextOffset = %v, want 2", page.NextOffset)
+	}
+	if page.Total != 2 {
+		t.Errorf("Total = %d, want 2 (bu sayfadaki kayıt sayısı)", page.Total)
+	}
+
+	t.Log("postgres list test passed")
 }

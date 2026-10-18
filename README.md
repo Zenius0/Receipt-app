@@ -119,7 +119,7 @@ mobil oturumu `expo-secure-store` içinde saklar → sonraki istekler `Authoriza
 │       │   ├── client.go             #   ortak HTTP istemcisi + yeniden deneme
 │       │   ├── gemini.go             #   Gemini Interactions API
 │       │   └── openai.go             #   OpenAI Chat Completions (alternatif)
-│       ├── receipts/service.go        #   Scan ve Confirm orkestrasyonu
+│       ├── receipts/service.go        #   Scan, Confirm ve List orkestrasyonu
 │       ├── middleware/                # JWT guard, CORS, log, recover, request-id
 │       ├── platform/db/               # pgxpool + gömülü migration çalıştırıcı
 │       │   └── migrations/
@@ -127,7 +127,7 @@ mobil oturumu `expo-secure-store` içinde saklar → sonraki istekler `Authoriza
 │       │       └── 000002_create_receipts.sql
 │       └── store/                     # domain tipleri + repository arayüzleri
 │           ├── store.go               #   UserRepository
-│           ├── receipt.go             #   Receipt, kategori/para birimi normalizasyonu
+│           ├── receipt.go             #   Receipt, filtre, kategori normalizasyonu
 │           └── pgstore/               #   PostgreSQL implementasyonları
 └── mobile/src/
     ├── config/env.ts
@@ -276,6 +276,56 @@ Yanıt başlığında `X-AI-Model` hangi sağlayıcı/modelin çalıştığını
 | 502 | `ai_unavailable` | sağlayıcı 5xx döndürdü veya kullanılamaz yanıt verdi |
 | 504 | `ai_timeout` | AI çağrısı zaman aşımına uğradı |
 | 500 | `ai_not_configured` | sunucuda API anahtarı eksik (sunucu tarafı hata) |
+
+### `GET /api/v1/receipts` (korumalı)
+
+Kullanıcının fişlerini **en yeni önce** listeler. `user_id` JWT'den çözülür;
+başka kullanıcının fişleri sorguya hiç girmez.
+
+| Query | Açıklama |
+|---|---|
+| `limit` | Sayfa boyutu. Varsayılan `50`, en fazla `100`. |
+| `offset` | Sayfa başlangıcı. Varsayılan `0`. |
+| `category` | `fuel`, `food`, `groceries`, ... Türkçe karşılıkları da kabul edilir (`yakit`). |
+| `from` | `YYYY-MM-DD` veya RFC3339. Fiş tarihi bu tarihten eski olamaz. |
+| `to` | Aynı format. **Gün sonu dahildir.** |
+
+```bash
+curl "https://fatura-api.onrender.com/api/v1/receipts?limit=20&category=fuel" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{
+  "items": [
+    {
+      "id": "6f1e...",
+      "userId": "0f5c...",
+      "storeName": "Shell Petrol",
+      "totalAmount": 1500.25,
+      "currency": "TRY",
+      "category": "fuel",
+      "receiptDate": "2026-10-16T12:00:00Z",
+      "localImagePath": "file:///data/user/0/com.fatura/cache/receipt-1.jpg",
+      "createdAt": "2026-10-17T12:03:00Z"
+    }
+  ],
+  "nextOffset": 20,
+  "total": 20
+}
+```
+
+`nextOffset` **yoksa** (JSON'da görünmez) liste bitti demektir — istemci
+`nextOffset` değerini bir sonraki istekte `offset` olarak gönderir.
+
+| Durum | `error` | Anlam |
+|---|---|---|
+| 400 | `invalid_request` | `limit`/`offset` sayı değil, tarih geçersiz, `from > to` |
+| 401 | `unauthorized` | oturum yok |
+| 422 | `invalid_filter` | bilinmeyen kategori |
+
+Boş sonuç `null` değil `{"items":[], "total":0}` döner; mobil istemci ayrım
+kontrolü yapmak zorunda kalmaz.
 
 ### `POST /api/v1/receipts/confirm` (korumalı)
 
@@ -506,8 +556,8 @@ const { user, isLoading, signInWithGoogle, signInWithApple, signOut } = useSessi
 
 ## ADIM 3 için bırakılan noktalar
 
-- Mobil taraf: `scanReceipt()` / `confirmReceipt()` servisleri ve onay ekranı
-- `GET /api/v1/receipts` listeleme uçları (aylık kategori dökümü için indeksler hazır)
+- Mobil taraf: `scanReceipt()` / `confirmReceipt()` / `listReceipts()` servisleri ve ekranları
+- Aylık kategori dökümü için toplam (`total`) sayım ucu — indeksler hazır, sorgu eksik
 - Fiş görseli kırpma/iyileştirme (AI'ya göndermeden önce EXIF temizleme, yeniden boyutlandırma)
 - `accountant_email` üzerinden muhasebeci davet akışı
 - Refresh token tablosu ve token yenileme (`POST /api/v1/auth/refresh`)

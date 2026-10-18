@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -66,6 +69,71 @@ func (r *ReceiptRepository) Create(ctx context.Context, receipt store.Receipt) (
 func isForeignKeyViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == foreignKeyViolation
+}
+
+// ListByUser, kullanıcının fişlerini filtreli ve sayfalanmış şekilde döner.
+// Filtre koşulları dinamik kurulur ancak DEĞERLERİ DAİMA parametre olarak
+// gönderilir; hiçbir kullanıcı girdisi SQL metnine gömülmez.
+func (r *ReceiptRepository) ListByUser(ctx context.Context, userID uuid.UUID, filter store.ReceiptFilter) ([]store.Receipt, error) {
+	normalized, err := filter.Normalize()
+	if err != nil {
+		return nil, fmt.Errorf("pgstore: list receipts: %w", err)
+	}
+
+	var (
+		conditions = []string{"user_id = $1"}
+		args       = []any{userID}
+	)
+
+	addArg := func(value any) string {
+		args = append(args, value)
+		return fmt.Sprintf("$%d", len(args))
+	}
+
+	if normalized.Category != "" {
+		conditions = append(conditions, "category = "+addArg(string(normalized.Category)))
+	}
+	if normalized.From != nil {
+		conditions = append(conditions, "receipt_date >= "+addArg(*normalized.From))
+	}
+	if normalized.To != nil {
+		// To günü dahil etmek için bir sonraki günün başlangıcı exclusive
+		// sınır olarak kullanılır; aksi halde "17.10.2026" filtresi o günü
+		// atardı.
+		end := normalized.To.UTC().Truncate(24*time.Hour).AddDate(0, 0, 1)
+		conditions = append(conditions, "receipt_date < "+addArg(end))
+	}
+
+	limitPlaceholder := addArg(normalized.Limit)
+	offsetPlaceholder := addArg(normalized.Offset)
+
+	// created DESC + id ile sabit sıralama, sayfalamada tekrarlı kayıt
+	// (created_at aynı olan satırlar) oluşmasını engeller.
+	query := `SELECT ` + receiptColumns + `
+		FROM receipts
+		WHERE ` + strings.Join(conditions, " AND ") + `
+		ORDER BY created_at DESC, id DESC
+		LIMIT ` + limitPlaceholder + ` OFFSET ` + offsetPlaceholder
+
+	rows, err := r.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("pgstore: list receipts: %w", err)
+	}
+	defer rows.Close()
+
+	receipts := make([]store.Receipt, 0, normalized.Limit)
+	for rows.Next() {
+		receipt, err := scanReceipt(rows)
+		if err != nil {
+			return nil, fmt.Errorf("pgstore: scan receipt: %w", err)
+		}
+		receipts = append(receipts, receipt)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("pgstore: list receipts: %w", err)
+	}
+
+	return receipts, nil
 }
 
 func scanReceipt(row pgx.Row) (store.Receipt, error) {

@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -51,6 +52,120 @@ type scanResponse struct {
 	Category    string    `json:"category"`
 	ReceiptDate time.Time `json:"receiptDate"`
 	TaxNumber   *string   `json:"taxNumber,omitempty"`
+}
+
+// List, kullanıcının fişlerini filtreli ve sayfalanmış şekilde döner.
+// Filtreler query string'den okunur; gövde beklenmez.
+func (h *ReceiptHandler) List(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.ClaimsFromContext(r.Context())
+	if !ok {
+		httpx.WriteError(w, http.StatusUnauthorized, "unauthorized", "missing session context")
+		return
+	}
+
+	query := r.URL.Query()
+
+	limit, err := parseBoundedInt(query.Get("limit"), 0, store.MaxListLimit)
+	if err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "limit must be a positive number")
+		return
+	}
+
+	offset, err := parseBoundedInt(query.Get("offset"), 0, 0)
+	if err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "offset must be a positive number")
+		return
+	}
+
+	from, err := parseDateParam(query.Get("from"))
+	if err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "from must be YYYY-MM-DD")
+		return
+	}
+
+	to, err := parseDateParam(query.Get("to"))
+	if err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "to must be YYYY-MM-DD")
+		return
+	}
+
+	if from != nil && to != nil && from.After(*to) {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "from must not be after to")
+		return
+	}
+
+	result, err := h.service.List(r.Context(), claims.UserID, receipts.ListInput{
+		Category: query.Get("category"),
+		From:     from,
+		To:       to,
+		Limit:    limit,
+		Offset:   offset,
+	})
+	if err != nil {
+		if errors.Is(err, receipts.ErrInvalidInput) {
+			httpx.WriteError(w, http.StatusUnprocessableEntity, "invalid_filter", filterDetail(err))
+			return
+		}
+		h.logInternal(r, "list receipts failed", err)
+		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "unexpected error")
+		return
+	}
+
+	// Boş liste null dönmemesi için boş dizi olarak serileştirilir; mobil
+	// istemci "null" ayrımıyla uğraşmak zorunda kalmaz.
+	if result.Items == nil {
+		result.Items = []store.Receipt{}
+	}
+
+	httpx.WriteJSON(w, http.StatusOK, result)
+}
+
+// parseBoundedInt, boş string için fallback döner; aksi halde 0 döner.
+func parseBoundedInt(raw string, fallback, max int) (int, error) {
+	if strings.TrimSpace(raw) == "" {
+		return fallback, nil
+	}
+
+	value, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || value < 0 {
+		return 0, errors.New("not a valid non-negative integer")
+	}
+	if max > 0 && value > max {
+		return max, nil
+	}
+
+	return value, nil
+}
+
+// parseDateParam, YYYY-MM-DD veya tam RFC3339 kabul eder.
+// Sadece tarih geldiğinde gün ortasına sabitlenir: aksi halde saat dilimi
+// farkı listeyi bir gün kaydırabilirdi.
+func parseDateParam(raw string) (*time.Time, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return nil, nil
+	}
+
+	if parsed, err := time.Parse("2006-01-02", value); err == nil {
+		normalized := time.Date(parsed.Year(), parsed.Month(), parsed.Day(), 12, 0, 0, 0, time.UTC)
+		return &normalized, nil
+	}
+
+	if parsed, err := time.Parse(time.RFC3339, value); err == nil {
+		utc := parsed.UTC()
+		return &utc, nil
+	}
+
+	return nil, errors.New("unsupported date format")
+}
+
+// filterDetail, kategori doğrulama hatasının okunabilir kısmını döner.
+func filterDetail(err error) string {
+	var invalid *receipts.InvalidInputError
+	if errors.As(err, &invalid) {
+		return invalid.Detail
+	}
+	return "unsupported filter value"
 }
 
 // scanJSONRequest, base64 gövde gönderen istemciler için kullanılır.

@@ -29,8 +29,37 @@ func (s *stubScanner) Scan(_ context.Context, image ai.Image) (ai.ScanResult, er
 }
 
 type stubRepo struct {
-	created []store.Receipt
-	err     error
+	created  []store.Receipt
+	err      error
+	list     []store.Receipt
+	listErr  error
+	listArgs []listCall
+}
+
+type listCall struct {
+	userID uuid.UUID
+	filter store.ReceiptFilter
+}
+
+// ListByUser, gerçek veritabanı gibi davranır: LIMIT/OFFSET uygulanır.
+// Servis katmanı sayfalamayı repository'ye devreder, bu yüzden sahte de
+// aynı davranışı göstermelidir.
+func (r *stubRepo) ListByUser(_ context.Context, userID uuid.UUID, filter store.ReceiptFilter) ([]store.Receipt, error) {
+	r.listArgs = append(r.listArgs, listCall{userID: userID, filter: filter})
+	if r.listErr != nil {
+		return nil, r.listErr
+	}
+
+	start := filter.Offset
+	if start > len(r.list) {
+		start = len(r.list)
+	}
+	end := start + filter.Limit
+	if end > len(r.list) {
+		end = len(r.list)
+	}
+
+	return r.list[start:end], nil
 }
 
 func (r *stubRepo) Create(_ context.Context, receipt store.Receipt) (store.Receipt, error) {

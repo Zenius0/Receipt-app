@@ -50,7 +50,19 @@ func (s *stubScanner) Scan(_ context.Context, _ ai.Image) (ai.ScanResult, error)
 }
 
 type stubRepo struct {
-	created []store.Receipt
+	created  []store.Receipt
+	list     []store.Receipt
+	listArgs []listCall
+}
+
+type listCall struct {
+	userID uuid.UUID
+	filter store.ReceiptFilter
+}
+
+func (r *stubRepo) ListByUser(_ context.Context, userID uuid.UUID, filter store.ReceiptFilter) ([]store.Receipt, error) {
+	r.listArgs = append(r.listArgs, listCall{userID: userID, filter: filter})
+	return r.list, nil
 }
 
 func (r *stubRepo) Create(_ context.Context, receipt store.Receipt) (store.Receipt, error) {

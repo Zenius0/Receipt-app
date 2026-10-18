@@ -56,6 +56,7 @@ func NewRouter(deps Dependencies) http.Handler {
 
 		mux.Handle("POST /api/v1/receipts/scan", authMiddleware.Require(http.HandlerFunc(receiptHandler.Scan)))
 		mux.Handle("POST /api/v1/receipts/confirm", authMiddleware.Require(http.HandlerFunc(receiptHandler.Confirm)))
+		mux.Handle("GET /api/v1/receipts", authMiddleware.Require(http.HandlerFunc(receiptHandler.List)))
 	} else {
 		logger.Warn("receipt routes disabled: receipt service is not configured")
 	}

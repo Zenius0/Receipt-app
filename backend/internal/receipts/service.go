@@ -75,6 +75,65 @@ func (s *Service) Scan(ctx context.Context, image ai.Image) (ai.ScanResult, erro
 	return result, nil
 }
 
+// ListInput, fiş listeleme isteğinin filtreleridir.
+type ListInput struct {
+	Category string
+	From     *time.Time
+	To       *time.Time
+	Limit    int
+	Offset   int
+}
+
+// ListResult, sayfalanmış fiş listesini taşır.
+// nextOffset, bir sonraki sayfanın başlangıcıdır; liste dolduysa nil'dir
+// ve istemci "daha fazla yok" diyerek isteği durdurur.
+type ListResult struct {
+	Items      []store.Receipt `json:"items"`
+	NextOffset *int            `json:"nextOffset,omitempty"`
+	Total      int             `json:"total"`
+}
+
+// List, kullanıcının fişlerini döner. Kullanıcı kimliği JWT'den gelir ve
+// sorgu her zaman o kullanıcıyla sınırlıdır.
+func (s *Service) List(ctx context.Context, userID uuid.UUID, in ListInput) (ListResult, error) {
+	filter := store.ReceiptFilter{
+		Category: store.Category(in.Category),
+		From:     in.From,
+		To:       in.To,
+		Limit:    in.Limit,
+		Offset:   in.Offset,
+	}
+
+	normalized, err := filter.Normalize()
+	if err != nil {
+		return ListResult{}, fmt.Errorf("%w: %w", ErrInvalidInput, err)
+	}
+
+	items, err := s.repo.ListByUser(ctx, userID, normalized)
+	if err != nil {
+		return ListResult{}, fmt.Errorf("receipts: list: %w", err)
+	}
+
+	result := ListResult{Items: items, Total: len(items)}
+
+	// Tam sayfa döndüyse muhtemelen devamı vardır; istemci bir sonraki istekte
+	// bu ofseti kullanır.
+	if len(items) == normalized.Limit {
+		next := normalized.Offset + normalized.Limit
+		result.NextOffset = &next
+	}
+
+	s.logger.InfoContext(ctx, "receipts listed",
+		slog.String("user_id", userID.String()),
+		slog.Int("returned", len(items)),
+		slog.Int("limit", normalized.Limit),
+		slog.Int("offset", normalized.Offset),
+		slog.Bool("has_category_filter", normalized.Category != ""),
+	)
+
+	return result, nil
+}
+
 // ConfirmInput, kullanıcının mobilde onayladığı nihai fiş verisidir.
 // Görsel bu aşamada sunucuya tekrar gönderilmez; yalnızca cihaz içi yol gelir.
 type ConfirmInput struct {

@@ -284,8 +284,56 @@ func NewReceipt(userID uuid.UUID, storeName string, totalAmount float64, currenc
 	}, nil
 }
 
+// ReceiptRepository, fiş kayıtlarının kalıcı işlemlerini tanımlar.
+// Tüm metotlar userID ile sınırlıdır: bir kullanıcı başka birinin fişini
+// göremez, sorgu katmanında filtrelenmesi zorunludur.
 type ReceiptRepository interface {
 	Create(ctx context.Context, receipt Receipt) (Receipt, error)
+	ListByUser(ctx context.Context, userID uuid.UUID, filter ReceiptFilter) ([]Receipt, error)
+}
+
+// ReceiptFilter, fiş listeleme sorgusunun kriterlerini taşır.
+// Sayfalama ofset tabanlıdır; mobil liste ekranı için yeterlidir ve
+// keyset pagination'a göre daha basit ve öngörülebilirdir.
+type ReceiptFilter struct {
+	Category Category
+	// From/To, fiş tarihine göre filtreler. To gün sonuna kadar dahildir
+	// (PG'de < next day kullanılır).
+	From   *time.Time
+	To     *time.Time
+	Limit  int
+	Offset int
+}
+
+const (
+	// DefaultListLimit, istemci limit göndermezse uygulanır.
+	DefaultListLimit = 50
+	// MaxListLimit, tek seferde dönen azami kayıt sayısıdır.
+	MaxListLimit = 100
+)
+
+// Normalize, filtrenin sınırlarını uygular: kategori doğrulanır, limit
+// makul aralığa kırpılır, negatif ofset sıfırlanır.
+func (f ReceiptFilter) Normalize() (ReceiptFilter, error) {
+	if f.Category != "" {
+		category, err := NormalizeCategory(string(f.Category))
+		if err != nil {
+			return ReceiptFilter{}, err
+		}
+		f.Category = category
+	}
+
+	switch {
+	case f.Limit <= 0:
+		f.Limit = DefaultListLimit
+	case f.Limit > MaxListLimit:
+		f.Limit = MaxListLimit
+	}
+	if f.Offset < 0 {
+		f.Offset = 0
+	}
+
+	return f, nil
 }
 
 // normalizeKey, kategori/sembol karşılaştırmaları için küçük harf, aksan ve
