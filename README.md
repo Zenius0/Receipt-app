@@ -539,12 +539,32 @@ npx expo start            # QR kod basar
 | Arayüzü görmek, ekranlar arası gezinmek | ✅ | ✅ |
 | Kamera / galeriden fiş çekme | ✅ | ✅ |
 | Google girişi | ❌ | ✅ |
+| Apple girişi | ❌ | ✅ |
 
-`@react-native-google-signin/google-signin` bir **native modüldür** ve Expo Go
-paketinin içinde bulunmaz. Bu yüzden uygulama Google modülünü dosya yüklenirken
-değil, ilk ihtiyaçta getirir (`authService.loadGoogleSignin`); aksi halde Expo Go'da
-uygulama açılırken çökerdi. Expo Go'da giriş ekranı Google butonu yerine bu
-durumu açıklayan bir bilgi kutusu gösterir.
+**Kural: uygulama, Expo Go'da bulunmayabilecek hiçbir native modülü dosya
+yüklenirken import etmez.** Hem `@react-native-google-signin/google-signin` hem
+`@invertase/react-native-apple-authentication` native modüllerdir; statik import
+yapıldığında modül bulunamayınca uygulama açılışta çöker ve Expo Go sessizce
+kapanır (hata mesajı çıkmaz). Bu yüzden ikisi de tembel yüklenir —
+`authService.loadGoogleSignin` / `loadAppleAuth` — ve `Promise` reddedilirse
+modül "yok" sayılır.
+
+### `expo-dev-client` ve Expo Go birbirini dışlar
+
+`expo-dev-client` kurulu olduğunda `npx expo start` artık Expo Go'ya değil,
+senin derlemenin geliştirici sürümüne hizmet eder; Expo Go proje açılınca
+kendini kapatır. Bu yüzden ikisi **aynı anda kullanılamaz**:
+
+```bash
+# Expo Go ile çalıştırmak için (arayüzü görmek)
+npm uninstall expo-dev-client
+npx expo start
+
+# Geliştirme derlemesi hazırlamak için (Google/Apple girişi)
+npx expo install expo-dev-client
+eas build -p android --profile development
+npx expo start --dev-client
+```
 
 ### Google girişini denemek için geliştirme derlemesi
 

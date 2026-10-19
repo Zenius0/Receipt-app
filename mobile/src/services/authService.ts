@@ -1,4 +1,3 @@
-import AppleAuthentication from '@invertase/react-native-apple-authentication';
 import * as Crypto from 'expo-crypto';
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
@@ -8,17 +7,20 @@ import type { AuthUser, Session } from '../api/types';
 import { env } from '../config/env';
 
 type GoogleSigninModule = typeof import('@react-native-google-signin/google-signin');
+type AppleAuthModule = (typeof import('@invertase/react-native-apple-authentication'))['default'];
 
 /**
- * @react-native-google-signin/google-signin bir native modüldür ve Expo Go
- * içinde bulunmaz. Bu yüzden dosya yüklenirken değil, ilk ihtiyaç duyulduğunda
- * getiriliyor: üstte statik import yapsaydık uygulama Expo Go'da açılırken
- * "native module bulunamadı" hatasıyla çökerdi.
- *
- * Sonuç: Expo Go'da uygulama açılır, Google butonu kapalı görünür.
+ * Hem @react-native-google-signin/google-signin hem de
+ * @invertase/react-native-apple-authentication native modüllerdir ve Expo Go
+ * paketinde bulunmayabilir. Bu yüzden ikisi de dosya yüklenirken değil, ilk
+ * ihtiyaç duyulduğunda getiriliyor: üstte statik import yapsaydık modül
+ * bulunamadığında uygulama açılışta çökerdi.
  */
 const GOOGLE_UNAVAILABLE =
-  'Google girişi Expo Go içinde çalışmaz. Denemek için uygulamayı geliştirme derlemesi (development build) olarak kurmanız gerekir.';
+  'Google girişi bu ortamda kullanılamıyor. Expo Go içinde çalışmaz; denemek için uygulamayı geliştirme derlemesi (development build) olarak kurmanız gerekir.';
+
+const APPLE_UNAVAILABLE =
+  'Apple ile giriş bu ortamda kullanılamıyor. Expo Go içinde çalışmaz; denemek için uygulamayı geliştirme derlemesi (development build) olarak kurmanız gerekir.';
 
 let googleModule: GoogleSigninModule | null = null;
 let googleModulePromise: Promise<GoogleSigninModule | null> | null = null;
@@ -39,6 +41,28 @@ function loadGoogleSignin(): Promise<GoogleSigninModule | null> {
 async function requireGoogleSignin(): Promise<GoogleSigninModule> {
   const mod = await loadGoogleSignin();
   if (!mod) throw new AuthError(GOOGLE_UNAVAILABLE);
+  return mod;
+}
+
+let appleModule: AppleAuthModule | null = null;
+let appleModulePromise: Promise<AppleAuthModule | null> | null = null;
+
+function loadAppleAuth(): Promise<AppleAuthModule | null> {
+  if (!appleModulePromise) {
+    appleModulePromise = import('@invertase/react-native-apple-authentication')
+      .then((mod) => {
+        appleModule = mod.default;
+        return mod.default;
+      })
+      .catch(() => null);
+  }
+  return appleModulePromise;
+}
+
+/** Apple modülünü getirir; yoksa kullanıcıya anlaşılır mesajla hata verir. */
+async function requireAppleAuth(): Promise<AppleAuthModule> {
+  const mod = await loadAppleAuth();
+  if (!mod) throw new AuthError(APPLE_UNAVAILABLE);
   return mod;
 }
 
@@ -126,6 +150,8 @@ async function signInWithAppleProvider(): Promise<Session> {
     );
   }
 
+  const AppleAuthentication = await requireAppleAuth();
+
   // isSupported bir fonksiyon değil, doğrudan okunan bir özelliktir.
   if (!AppleAuthentication.isSupported) {
     throw new AuthError('Bu cihazda Apple ile giriş desteklenmiyor.');
@@ -194,6 +220,9 @@ export const authService = {
    * Expo Go'da false döner; geliştirme derlemesinde true.
    */
   isGoogleAvailable: async (): Promise<boolean> => (await loadGoogleSignin()) !== null,
+
+  /** Apple girişinin bu ortamda kullanılabilir olup olmadığını söyler. */
+  isAppleAvailable: async (): Promise<boolean> => (await loadAppleAuth()) !== null,
 
   /** Oturumu güvenli depodan geri yükler; süresi dolmuşsa null döner. */
   async restoreSession(): Promise<Session | null> {
