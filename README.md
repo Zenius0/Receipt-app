@@ -532,6 +532,22 @@ npx expo start            # QR kod basar
 > eşleşir. Bu yüzden SDK sürümü mağazadaki Expo Go'ya göre belirlenir, `latest`
 > etiketine göre değil.
 
+### Giriş butonları platforma göre
+
+| Platform | Gösterilen butonlar |
+|---|---|
+| Android | Yalnızca **Google ile devam et** |
+| iOS | **Google ile devam et** + **Apple ile devam et** |
+
+Apple ile giriş bir iOS sistem özelliğidir (`AuthenticationServices`); Android'de
+çalışmaz. Bu yüzden Android'de Apple butonu hiç gösterilmez — çalışmayan bir
+buton koymak yerine tek seçenek bırakmak daha temiz. Karar `App.tsx` içinde
+`showApple = Platform.OS === 'ios'` ile verilir.
+
+Butonlar Expo Go'da da görünür; nihai arayüz birebir aynı kalsın diye. Ancak
+native modül yoksa giriş ekranının altında *"Giriş için geliştirme derlemesi
+gerekli"* bilgi kutusu çıkar.
+
 ### Expo Go'da ne çalışır, ne çalışmaz
 
 | Özellik | Expo Go | Geliştirme derlemesi |
@@ -545,9 +561,29 @@ npx expo start            # QR kod basar
 yüklenirken import etmez.** Hem `@react-native-google-signin/google-signin` hem
 `@invertase/react-native-apple-authentication` native modüllerdir; statik import
 yapıldığında modül bulunamayınca uygulama açılışta çöker ve Expo Go sessizce
-kapanır (hata mesajı çıkmaz). Bu yüzden ikisi de tembel yüklenir —
-`authService.loadGoogleSignin` / `loadAppleAuth` — ve `Promise` reddedilirse
-modül "yok" sayılır.
+kapanır (hata mesajı çıkmaz).
+
+Tembel yükleme (`authService.loadGoogleSignin` / `loadAppleAuth`) tek başına
+**yeterli değildir**: Metro dinamik `import()`'u ayrı bir chunk'a çıkarıyor ve
+chunk değerlendirilirken patlayan hata promise zincirinin dışına kaçıyor, bu
+yüzden `.catch()` yakalayamıyor. Doğru çözüm: **JS dosyasına dokunmadan önce**
+native modülün varlığını sormak — `TurboModuleRegistry.get` hata fırlatmadan
+`null` döner (`getEnforcing` fırlatır). Apple için karşılığı
+`NativeModules.RNAppleAuthModule` / `RNAppleAuthModuleAndroid`.
+
+### Bulut derlemesinde `.env` yüklenmez
+
+EAS Build, projeyi `.gitignore` kurallarına göre paketler; `mobile/.env`
+gitignore'da olduğu için **yüklenmez**. Bu yüzden `EXPO_PUBLIC_*` değişkenleri
+build sırasında EAS tarafından sağlanmalıdır:
+
+```bash
+eas env:create --name EXPO_PUBLIC_API_URL \
+  --value "https://receipt-app-udje.onrender.com" \
+  --visibility plaintext --environment development --non-interactive
+```
+
+`development`, `preview` ve `production` ortamlarının üçüne de eklendi.
 
 ### `expo-dev-client` ve Expo Go birbirini dışlar
 
