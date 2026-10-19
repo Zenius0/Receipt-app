@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, BackHandler, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, BackHandler, Platform, StyleSheet, Text, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 
 import { ConfirmScreen, type ConfirmDraft } from './src/screens/ConfirmScreen';
@@ -28,6 +28,7 @@ export default function App() {
     isLoading,
     error: authError,
     googleAvailable,
+    appleAvailable,
     signInWithGoogle,
     signInWithApple,
     signOut,
@@ -45,6 +46,14 @@ export default function App() {
   const [saveError, setSaveError] = useState<string | null>(null);
 
   const token = session?.token ?? null;
+
+  // Apple ile giriş yalnızca iOS'ta çalışır (sistem özelliği). Android'de
+  // butonu hiç göstermiyoruz — çalışmayan bir buton koymak yerine tek
+  // seçenek bırakmak daha temiz.
+  const showApple = Platform.OS === 'ios';
+
+  // Expo Go'da native giriş modülleri yoktur; kullanıcıya bunu baştan söyle.
+  const nativeAuthMissing = !googleAvailable || (showApple && !appleAvailable);
 
   // Fiş listesini çek. Oturum yoksa hiç denenmez.
   const loadReceipts = useCallback(async () => {
@@ -165,7 +174,8 @@ export default function App() {
         isLoading={isLoading}
         error={authError}
         googleConfigured={Boolean(env.googleWebClientId || env.googleIosClientId)}
-        googleAvailable={googleAvailable}
+        showApple={showApple}
+        nativeAuthMissing={nativeAuthMissing}
         onSignInWithGoogle={() => void signInWithGoogle()}
         onSignInWithApple={() => void signInWithApple()}
       />

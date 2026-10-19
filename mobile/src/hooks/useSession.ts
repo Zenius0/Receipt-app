@@ -10,6 +10,8 @@ interface SessionState {
   error: string | null;
   /** Google native modülü mevcut mu? Expo Go'da false. */
   googleAvailable: boolean;
+  /** Apple native modülü mevcut mu? Expo Go'da false. */
+  appleAvailable: boolean;
 }
 
 export function useSession(): SessionState & {
@@ -23,6 +25,7 @@ export function useSession(): SessionState & {
     isLoading: true,
     error: null,
     googleAvailable: false,
+    appleAvailable: false,
   });
 
   const run = useCallback(async (action: () => Promise<Session | null>) => {
@@ -50,13 +53,19 @@ export function useSession(): SessionState & {
     void run(() => authService.restoreSession());
   }, [run]);
 
-  // Google native modülü hazır mı diye bak. Expo Go'da bu import reddedilir
-  // ve false döner; uygulamanın açılmasını engellemez.
+  // Native giriş modülleri hazır mı diye bak. Expo Go'da bu import'lar
+  // reddedilir ve false döner; uygulamanın açılmasını engellemez.
   useEffect(() => {
     let active = true;
-    void authService.isGoogleAvailable().then((available) => {
-      if (active) setState((prev) => ({ ...prev, googleAvailable: available }));
-    });
+
+    void Promise.all([authService.isGoogleAvailable(), authService.isAppleAvailable()]).then(
+      ([google, apple]) => {
+        if (active) {
+          setState((prev) => ({ ...prev, googleAvailable: google, appleAvailable: apple }));
+        }
+      },
+    );
+
     return () => {
       active = false;
     };

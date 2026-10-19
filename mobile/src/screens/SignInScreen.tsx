@@ -10,8 +10,10 @@ interface SignInScreenProps {
   error: string | null;
   /** .env'de Google Client ID var mı? */
   googleConfigured: boolean;
-  /** Google native modülü mevcut mu? Expo Go'da false. */
-  googleAvailable: boolean;
+  /** Apple butonu gösterilsin mi? Yalnızca iOS'ta gösterilir. */
+  showApple: boolean;
+  /** Native giriş modülleri eksik mi? (Expo Go'da true) */
+  nativeAuthMissing: boolean;
   onSignInWithGoogle: () => void;
   onSignInWithApple: () => void;
 }
@@ -20,21 +22,25 @@ interface SignInScreenProps {
  * Giriş ekranı.
  *
  * Tasarım kararı: tek bir siyah buton. Kullanıcı ekrana geldiğinde "Google
- * ile devam et" yazısı ve başka hiçbir şey görür — hangi sağlayıcının
- * yapılandırılmış olduğu belli olmadığı için her iki buton da gösterilir,
- * ancak birincil olan Google'dur (Apple üyeliği maliyetlidir ve çoğu
- * projede kapalıdır).
+ * ile devam et" yazısı ve başka hiçbir şey görür.
+ *
+ * Platform kuralı: **Android'de Apple butonu hiç gösterilmez** — Apple girişi
+ * iOS'ta çalışan bir sistem özelliği, Android'de göstermek kullanıcıyı
+ * çalışmayan bir butona gönderir. iOS'ta iki buton birlikte görünür.
+ *
+ * Butonlar Expo Go'da da görünür (nihai arayüz birebir aynı olsun diye);
+ * ancak native modül yoksa üstte bir bilgi kutusu çıkar ve butona basıldığında
+ * anlaşılır bir hata mesajı verilir.
  */
 export function SignInScreen({
   isLoading,
   error,
   googleConfigured,
-  googleAvailable,
+  showApple,
+  nativeAuthMissing,
   onSignInWithGoogle,
   onSignInWithApple,
 }: SignInScreenProps) {
-  const googleUsable = googleConfigured && googleAvailable;
-
   return (
     <Screen>
       <View style={styles.container}>
@@ -54,7 +60,7 @@ export function SignInScreen({
         ) : null}
 
         <View style={styles.actions}>
-          {googleUsable ? (
+          {googleConfigured ? (
             <Button
               label="Google ile devam et"
               icon="G"
@@ -62,29 +68,37 @@ export function SignInScreen({
               loading={isLoading}
               testID="sign-in-google"
             />
-          ) : !googleConfigured ? (
+          ) : (
             <Banner
               tone="info"
               title="Google girişi yapılandırılmamış"
               message="EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID değerini .env dosyanıza ekleyin."
             />
-          ) : (
-            <Banner
-              tone="info"
-              title="Expo Go'da Google girişi kapalı"
-              message="Google girişi özel bir native modül kullanır ve Expo Go içinde bulunmaz. Aramayı denemek için uygulamayı geliştirme derlemesi olarak kurun."
-            />
           )}
 
-          <Button
-            label="Apple ile devam et"
-            icon=""
-            variant="secondary"
-            size="medium"
-            onPress={onSignInWithApple}
-            disabled={isLoading}
-            testID="sign-in-apple"
-          />
+          {showApple ? (
+            <Button
+              label="Apple ile devam et"
+              icon=""
+              variant="secondary"
+              size="medium"
+              onPress={onSignInWithApple}
+              disabled={isLoading}
+              testID="sign-in-apple"
+            />
+          ) : null}
+
+          {nativeAuthMissing ? (
+            <Banner
+              tone="info"
+              title="Giriş için geliştirme derlemesi gerekli"
+              message={
+                showApple
+                  ? 'Google ve Apple girişi özel native modüller kullanır; Expo Go içinde bulunmaz. Giriş yapabilmek için uygulamayı geliştirme derlemesi olarak kurun.'
+                  : 'Google girişi özel bir native modül kullanır; Expo Go içinde bulunmaz. Giriş yapabilmek için uygulamayı geliştirme derlemesi olarak kurun.'
+              }
+            />
+          ) : null}
         </View>
 
         {isLoading ? (
