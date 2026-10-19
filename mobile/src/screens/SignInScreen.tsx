@@ -8,7 +8,10 @@ import { colors, radius, spacing, typography } from '../theme';
 interface SignInScreenProps {
   isLoading: boolean;
   error: string | null;
-  googleEnabled: boolean;
+  /** .env'de Google Client ID var mı? */
+  googleConfigured: boolean;
+  /** Google native modülü mevcut mu? Expo Go'da false. */
+  googleAvailable: boolean;
   onSignInWithGoogle: () => void;
   onSignInWithApple: () => void;
 }
@@ -25,10 +28,13 @@ interface SignInScreenProps {
 export function SignInScreen({
   isLoading,
   error,
-  googleEnabled,
+  googleConfigured,
+  googleAvailable,
   onSignInWithGoogle,
   onSignInWithApple,
 }: SignInScreenProps) {
+  const googleUsable = googleConfigured && googleAvailable;
+
   return (
     <Screen>
       <View style={styles.container}>
@@ -48,7 +54,7 @@ export function SignInScreen({
         ) : null}
 
         <View style={styles.actions}>
-          {googleEnabled ? (
+          {googleUsable ? (
             <Button
               label="Google ile devam et"
               icon="G"
@@ -56,11 +62,17 @@ export function SignInScreen({
               loading={isLoading}
               testID="sign-in-google"
             />
-          ) : (
+          ) : !googleConfigured ? (
             <Banner
               tone="info"
               title="Google girişi yapılandırılmamış"
               message="EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID değerini .env dosyanıza ekleyin."
+            />
+          ) : (
+            <Banner
+              tone="info"
+              title="Expo Go'da Google girişi kapalı"
+              message="Google girişi özel bir native modül kullanır ve Expo Go içinde bulunmaz. Aramayı denemek için uygulamayı geliştirme derlemesi olarak kurun."
             />
           )}
 

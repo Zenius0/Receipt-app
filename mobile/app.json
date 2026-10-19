@@ -45,7 +45,8 @@
           "configureAndroidBackup": true,
           "faceIDPermission": "Giriş bilgilerinizi güvenle saklamak için Face ID kullanılır."
         }
-      ]
+      ],
+      "expo-status-bar"
     ]
   }
 }

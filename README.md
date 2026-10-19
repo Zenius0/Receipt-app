@@ -291,7 +291,7 @@ başka kullanıcının fişleri sorguya hiç girmez.
 | `to` | Aynı format. **Gün sonu dahildir.** |
 
 ```bash
-curl "https://fatura-api.onrender.com/api/v1/receipts?limit=20&category=fuel" \
+curl "https://receipt-app-udje.onrender.com/api/v1/receipts?limit=20&category=fuel" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -516,7 +516,7 @@ Sayaçlar bellek içidir ve tek sunucu örneği varsayar. Birden fazla örneğe
 
 ## Mobil Uygulama
 
-Expo SDK 58 / React 19.3 / React Native 0.88.
+Expo SDK 57 / React 19.2 / React Native 0.86.
 
 ```bash
 cd mobile
@@ -525,18 +525,68 @@ npm install
 npx expo start            # QR kod basar
 ```
 
-**Çalıştırma seçenekleri:**
+> **Neden SDK 57, neden 58 değil?** Play Store ve App Store'daki Expo Go uygulaması
+> tek bir SDK sürümünü taşır ve mağazaya yeni sürüm çıkana kadar geride kalır.
+> Proje SDK 58 istediğinde Expo Go *"Project is incompatible with this version of
+> Expo Go"* hatası verir. SDK 57, mağazadaki Expo Go'nun sürümüyle birebir
+> eşleşir. Bu yüzden SDK sürümü mağazadaki Expo Go'ya göre belirlenir, `latest`
+> etiketine göre değil.
+
+### Expo Go'da ne çalışır, ne çalışmaz
+
+| Özellik | Expo Go | Geliştirme derlemesi |
+|---|---|---|
+| Arayüzü görmek, ekranlar arası gezinmek | ✅ | ✅ |
+| Kamera / galeriden fiş çekme | ✅ | ✅ |
+| Google girişi | ❌ | ✅ |
+
+`@react-native-google-signin/google-signin` bir **native modüldür** ve Expo Go
+paketinin içinde bulunmaz. Bu yüzden uygulama Google modülünü dosya yüklenirken
+değil, ilk ihtiyaçta getirir (`authService.loadGoogleSignin`); aksi halde Expo Go'da
+uygulama açılırken çökerdi. Expo Go'da giriş ekranı Google butonu yerine bu
+durumu açıklayan bir bilgi kutusu gösterir.
+
+### Google girişini denemek için geliştirme derlemesi
+
+```bash
+cd mobile
+npx expo install expo-dev-client
+eas login                       # ücretsiz Expo hesabı
+eas build -p android --profile development
+```
+
+Bulunan APK'yı telefona kurun. Bundan sonra `npx expo start` yerine
+`npx expo start --dev-client` çalıştırın ve telefonda açılan **Fatura Takipçi**
+uygulamasını seçin (Expo Go değil).
+
+> `eas build` bulutta çalışır ve ücretsizdir; ilk Android derlemesi ~15 dakika
+> sürer. Her native modül eklendiğinde yeniden derleme gerekir.
+
+### Çalıştırma seçenekleri
 
 | Yöntem | Ne zaman |
 |---|---|
-| **Expo Go + gerçek telefon** | En hızlı yol. Telefona Expo Go kurun, `npx expo start` ile QR okutun. |
+| **Expo Go + gerçek telefon** | Arayüzü görmek için en hızlı yol. Google girişi çalışmaz. |
+| **Geliştirme derlemesi** | Google girişi dahil her şeyi denemek için. |
 | **iOS Simulator** | macOS'ta Xcode yüklüyse `npx expo start --ios`. Kamera için "Photo Library" yükleme yeterli. |
 | Android emülatör | Android Studio (~10 GB) gerektirir; gerek yok. |
 
-**`EXPO_PUBLIC_API_URL` ayarı:**
+### `EXPO_PUBLIC_API_URL` ayarı
+
+Backend Render'da çalışıyorsa (önerilen):
+
+```
+EXPO_PUBLIC_API_URL=https://<render-servis-adresi>
+```
+
+Backend'i bilgisayarınızda `make run` ile çalıştırıyorsanız:
 
 - iOS Simulator / web → `http://localhost:8080`
 - **Gerçek telefon** → bilgisayarınızın LAN adresi: `ipconfig getifaddr en0`
+
+> Render free plan 15 dakika hareketsizlikte servisi kapatır; ilk istek ~1 dakika
+> sürebilir. Bu yüzden uygulamayı açarken "yükleniyor" ekranında biraz beklemek
+> normaldir. `0.5c-512mb` planına geçilirse bu bekleme kaybolur.
 
 **Giriş akışı:** `Giriş → Ana ekran → Fiş Tara → Kamera → Onay ekranı → Kaydet → Liste`
 

@@ -8,6 +8,8 @@ interface SessionState {
   session: Session | null;
   isLoading: boolean;
   error: string | null;
+  /** Google native modülü mevcut mu? Expo Go'da false. */
+  googleAvailable: boolean;
 }
 
 export function useSession(): SessionState & {
@@ -20,6 +22,7 @@ export function useSession(): SessionState & {
     session: null,
     isLoading: true,
     error: null,
+    googleAvailable: false,
   });
 
   const run = useCallback(async (action: () => Promise<Session | null>) => {
@@ -27,17 +30,37 @@ export function useSession(): SessionState & {
 
     try {
       const session = await action();
-      setState({ user: session?.user ?? null, session, isLoading: false, error: null });
+      // prev ile birleştiriliyor: googleAvailable gibi eşzamanlı çözülen
+      // alanlar bu güncellemede silinmemeli.
+      setState((prev) => ({
+        ...prev,
+        user: session?.user ?? null,
+        session,
+        isLoading: false,
+        error: null,
+      }));
     } catch (error) {
       const message =
         error instanceof AuthError || error instanceof Error ? error.message : 'Bilinmeyen hata';
-      setState({ user: null, session: null, isLoading: false, error: message });
+      setState((prev) => ({ ...prev, user: null, session: null, isLoading: false, error: message }));
     }
   }, []);
 
   useEffect(() => {
     void run(() => authService.restoreSession());
   }, [run]);
+
+  // Google native modülü hazır mı diye bak. Expo Go'da bu import reddedilir
+  // ve false döner; uygulamanın açılmasını engellemez.
+  useEffect(() => {
+    let active = true;
+    void authService.isGoogleAvailable().then((available) => {
+      if (active) setState((prev) => ({ ...prev, googleAvailable: available }));
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   return {
     ...state,

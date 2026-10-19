@@ -1,5 +1,4 @@
 import AppleAuthentication from '@invertase/react-native-apple-authentication';
-import { GoogleSignin, isErrorWithCode, statusCodes } from '@react-native-google-signin/google-signin';
 import * as Crypto from 'expo-crypto';
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
@@ -7,6 +6,47 @@ import { Platform } from 'react-native';
 import { ApiError, authApi } from '../api/client';
 import type { AuthUser, Session } from '../api/types';
 import { env } from '../config/env';
+
+type GoogleSigninModule = typeof import('@react-native-google-signin/google-signin');
+
+/**
+ * @react-native-google-signin/google-signin bir native modüldür ve Expo Go
+ * içinde bulunmaz. Bu yüzden dosya yüklenirken değil, ilk ihtiyaç duyulduğunda
+ * getiriliyor: üstte statik import yapsaydık uygulama Expo Go'da açılırken
+ * "native module bulunamadı" hatasıyla çökerdi.
+ *
+ * Sonuç: Expo Go'da uygulama açılır, Google butonu kapalı görünür.
+ */
+const GOOGLE_UNAVAILABLE =
+  'Google girişi Expo Go içinde çalışmaz. Denemek için uygulamayı geliştirme derlemesi (development build) olarak kurmanız gerekir.';
+
+let googleModule: GoogleSigninModule | null = null;
+let googleModulePromise: Promise<GoogleSigninModule | null> | null = null;
+
+function loadGoogleSignin(): Promise<GoogleSigninModule | null> {
+  if (!googleModulePromise) {
+    googleModulePromise = import('@react-native-google-signin/google-signin')
+      .then((mod) => {
+        googleModule = mod;
+        return mod;
+      })
+      .catch(() => null);
+  }
+  return googleModulePromise;
+}
+
+/** Google modülünü getirir; yoksa kullanıcıya anlaşılır mesajla hata verir. */
+async function requireGoogleSignin(): Promise<GoogleSigninModule> {
+  const mod = await loadGoogleSignin();
+  if (!mod) throw new AuthError(GOOGLE_UNAVAILABLE);
+  return mod;
+}
+
+/** Google hata kodlarını güvenle okur; modül yüklü değilse null döner. */
+function googleErrorCode(error: unknown): string | null {
+  if (!googleModule || !googleModule.isErrorWithCode(error)) return null;
+  return error.code;
+}
 
 export class AuthError extends Error {
   constructor(message: string) {
@@ -23,10 +63,10 @@ let configured = false;
  * @react-native-google-signin/google-signin v16'da isimlendirilmiş fonksiyon
  * ihraçları kaldırıldı; tüm API tek bir GoogleSignin nesnesinde toplandı.
  */
-function ensureGoogleConfigured(): void {
+function ensureGoogleConfigured(mod: GoogleSigninModule): void {
   if (configured) return;
 
-  GoogleSignin.configure({
+  mod.GoogleSignin.configure({
     // iOS ve Android aynı Web Client ID kullanır; mobil kütüphaneler
     // Google'ın önerdiği bu yaklaşımı uygular.
     webClientId: env.googleWebClientId,
@@ -44,7 +84,10 @@ async function signInWithGoogleProvider(): Promise<Session> {
     );
   }
 
-  ensureGoogleConfigured();
+  const mod = await requireGoogleSignin();
+  const { GoogleSignin } = mod;
+
+  ensureGoogleConfigured(mod);
 
   try {
     await GoogleSignin.hasPlayServices();
@@ -119,10 +162,12 @@ async function signInWithAppleProvider(): Promise<Session> {
     });
   } catch (error) {
     if (error instanceof AuthError) throw error;
-    if (isErrorWithCode(error) && error.code === statusCodes.IN_PROGRESS) {
+    const codes = googleModule?.statusCodes;
+    const code = googleErrorCode(error);
+    if (codes && code === codes.IN_PROGRESS) {
       throw new AuthError('Apple girişi zaten sürüyor.');
     }
-    if (isErrorWithCode(error) && error.code === statusCodes.SIGN_IN_CANCELLED) {
+    if (codes && code === codes.SIGN_IN_CANCELLED) {
       throw new AuthError('Giriş iptal edildi.');
     }
     throw new AuthError('Apple ile giriş yapılamadı.');
@@ -143,6 +188,12 @@ const decodeJwt = (token: string): Record<string, unknown> | null => {
 export const authService = {
   signInWithGoogle: signInWithGoogleProvider,
   signInWithApple: signInWithAppleProvider,
+
+  /**
+   * Google girişinin bu ortamda kullanılabilir olup olmadığını söyler.
+   * Expo Go'da false döner; geliştirme derlemesinde true.
+   */
+  isGoogleAvailable: async (): Promise<boolean> => (await loadGoogleSignin()) !== null,
 
   /** Oturumu güvenli depodan geri yükler; süresi dolmuşsa null döner. */
   async restoreSession(): Promise<Session | null> {
@@ -170,10 +221,10 @@ export const authService = {
   async signOut(): Promise<void> {
     await SecureStore.deleteItemAsync(env.sessionStorageKey);
 
-    // Google oturumu cihazda açık kalmasın.
+    // Google oturumu cihazda açık kalmasın. Modül hiç yüklenmediyse
+    // (örneğin Expo Go) yapılacak bir şey yok.
     try {
-      ensureGoogleConfigured();
-      await GoogleSignin.signOut();
+      await googleModule?.GoogleSignin.signOut();
     } catch {
       // Google yapılandırılmadıysa sorun değil.
     }

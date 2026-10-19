@@ -22,8 +22,16 @@ import { colors, spacing, typography } from './src/theme';
 type Route = 'home' | 'confirm' | 'receipts';
 
 export default function App() {
-  const { user, session, isLoading, error: authError, signInWithGoogle, signInWithApple, signOut } =
-    useSession();
+  const {
+    user,
+    session,
+    isLoading,
+    error: authError,
+    googleAvailable,
+    signInWithGoogle,
+    signInWithApple,
+    signOut,
+  } = useSession();
 
   const [route, setRoute] = useState<Route>('home');
   const [receipts, setReceipts] = useState<Receipt[]>([]);
@@ -156,7 +164,8 @@ export default function App() {
       <SignInScreen
         isLoading={isLoading}
         error={authError}
-        googleEnabled={Boolean(env.googleWebClientId || env.googleIosClientId)}
+        googleConfigured={Boolean(env.googleWebClientId || env.googleIosClientId)}
+        googleAvailable={googleAvailable}
         onSignInWithGoogle={() => void signInWithGoogle()}
         onSignInWithApple={() => void signInWithApple()}
       />
