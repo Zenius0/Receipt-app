@@ -46,6 +46,12 @@
           "faceIDPermission": "Giriş bilgilerinizi güvenle saklamak için Face ID kullanılır."
         }
       ],
+      [
+        "@react-native-google-signin/google-signin",
+        {
+          "iosUrlScheme": "com.googleusercontent.apps.4147052520-a6q3qj7v3fo9sa3cl4m39gbjjtbsft7k"
+        }
+      ],
       "expo-status-bar"
     ]
   }

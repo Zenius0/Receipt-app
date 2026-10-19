@@ -548,16 +548,33 @@ durumu açıklayan bir bilgi kutusu gösterir.
 
 ### Google girişini denemek için geliştirme derlemesi
 
+EAS CLI gerekli. Projeye bağımlılık olarak kurulmaz (Expo Doctor reddeder).
+Önerilen yol — global kurulum:
+
+```bash
+sudo npm install -g eas-cli     # bir kez şifre sorar
+eas --version                    # doğrulama
+```
+
 ```bash
 cd mobile
-npx expo install expo-dev-client
-eas login                       # ücretsiz Expo hesabı
+eas login                        # ücretsiz Expo hesabı
 eas build -p android --profile development
 ```
 
-Bulunan APK'yı telefona kurun. Bundan sonra `npx expo start` yerine
-`npx expo start --dev-client` çalıştırın ve telefonda açılan **Fatura Takipçi**
-uygulamasını seçin (Expo Go değil).
+> **`npx eas` yazmayın.** npm'de Expo ile ilgisi olmayan, aynı adlı bir `eas`
+> paketi (0.1.0) var; `npx eas` onu indirir. Doğru ad `eas-cli`.
+>
+> Global kurulum yapamıyorsanız kurulumsuz da kullanılır, ama her komutta tam adı
+> yazılır: `npx eas-cli login`, `npx eas-cli build -p android --profile development`
+
+Bulunan APK'yı telefona kurun. Bundan sonra Expo Go'yu **kullanmayın**:
+
+```bash
+npx expo start --dev-client
+```
+
+Telefonda açılan listeden **Fatura Takipçi** uygulamasını seçin (Expo Go değil).
 
 > `eas build` bulutta çalışır ve ücretsizdir; ilk Android derlemesi ~15 dakika
 > sürer. Her native modül eklendiğinde yeniden derleme gerekir.
