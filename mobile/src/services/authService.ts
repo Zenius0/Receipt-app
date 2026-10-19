@@ -1,6 +1,6 @@
 import * as Crypto from 'expo-crypto';
 import * as SecureStore from 'expo-secure-store';
-import { Platform } from 'react-native';
+import { NativeModules, Platform, TurboModuleRegistry } from 'react-native';
 
 import { ApiError, authApi } from '../api/client';
 import type { AuthUser, Session } from '../api/types';
@@ -12,9 +12,17 @@ type AppleAuthModule = (typeof import('@invertase/react-native-apple-authenticat
 /**
  * Hem @react-native-google-signin/google-signin hem de
  * @invertase/react-native-apple-authentication native modüllerdir ve Expo Go
- * paketinde bulunmayabilir. Bu yüzden ikisi de dosya yüklenirken değil, ilk
- * ihtiyaç duyulduğunda getiriliyor: üstte statik import yapsaydık modül
- * bulunamadığında uygulama açılışta çökerdi.
+ * paketinde bulunmayabilir.
+ *
+ * ÖNEMLİ: Native modülün yokluğu sadece "butonu pasif yap" demek değil —
+ * kütüphanenin JS dosyası import edildiği anda `TurboModuleRegistry.getEnforcing`
+ * çağırıp hata fırlatıyor. O hata Metro'nun ayrı chunk yüklemesi içinde
+ * gerçekleştiği için promise `.catch()` ile yakalanamıyor ve uygulama
+ * "Uncaught Error" ekranıyla çöküyor.
+ *
+ * Bu yüzden önce native modülün gerçekten var olduğunu soruyoruz
+ * (`TurboModuleRegistry.get` hata fırlatmaz, yoksa null döner) ve JS
+ * dosyasını ancak ondan sonra değerlendiriyoruz.
  */
 const GOOGLE_UNAVAILABLE =
   'Google girişi bu ortamda kullanılamıyor. Expo Go içinde çalışmaz; denemek için uygulamayı geliştirme derlemesi (development build) olarak kurmanız gerekir.';
@@ -22,10 +30,34 @@ const GOOGLE_UNAVAILABLE =
 const APPLE_UNAVAILABLE =
   'Apple ile giriş bu ortamda kullanılamıyor. Expo Go içinde çalışmaz; denemek için uygulamayı geliştirme derlemesi (development build) olarak kurmanız gerekir.';
 
+const GOOGLE_NATIVE_MODULE = 'RNGoogleSignin';
+const APPLE_NATIVE_MODULES = ['RNAppleAuthModule', 'RNAppleAuthModuleAndroid'];
+
+/** TurboModule (yeni mimari) kayıtlı mı? Yoksa null döner, hata fırlatmaz. */
+function hasTurboModule(name: string): boolean {
+  try {
+    return TurboModuleRegistry.get(name) != null;
+  } catch {
+    return false;
+  }
+}
+
+/** Eski mimari NativeModules kaydı var mı? */
+function hasLegacyModule(name: string): boolean {
+  try {
+    return NativeModules[name] != null;
+  } catch {
+    return false;
+  }
+}
+
 let googleModule: GoogleSigninModule | null = null;
 let googleModulePromise: Promise<GoogleSigninModule | null> | null = null;
 
 function loadGoogleSignin(): Promise<GoogleSigninModule | null> {
+  // Native modül yoksa JS dosyasına hiç dokunmadan burada bitiyoruz.
+  if (!hasTurboModule(GOOGLE_NATIVE_MODULE)) return Promise.resolve(null);
+
   if (!googleModulePromise) {
     googleModulePromise = import('@react-native-google-signin/google-signin')
       .then((mod) => {
@@ -48,6 +80,10 @@ let appleModule: AppleAuthModule | null = null;
 let appleModulePromise: Promise<AppleAuthModule | null> | null = null;
 
 function loadAppleAuth(): Promise<AppleAuthModule | null> {
+  // Apple modülü eski mimari NativeModules üzerinden geliyor; JS dosyasına
+  // dokunmadan önce native kaydın varlığını doğruluyoruz.
+  if (!APPLE_NATIVE_MODULES.some(hasLegacyModule)) return Promise.resolve(null);
+
   if (!appleModulePromise) {
     appleModulePromise = import('@invertase/react-native-apple-authentication')
       .then((mod) => {
