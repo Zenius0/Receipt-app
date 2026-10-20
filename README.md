@@ -678,9 +678,11 @@ düşer.
   tam olarak bu türden olduğu için doğrulama başarısız oluyordu. Apple tarafındakiyle aynı yöntem
   hem sorunu kaldırır hem de token'ı doğrulamadan ağa göndermez.
 - **Android'de Google girişi için** uygulamanın imza parmak izi (SHA-1) Google Cloud Console'da
-  *Android istemcisi* olarak kayıtlı olmalıdır. Paket adı `com.selim.fatura`, SHA-1 ise EAS'in
-  yönettiği keystore'undan gelir ve derlenen APK'nın imzasından okunabilir. Bu kayıt yoksa giriş
-  "DEVELOPER_ERROR" ile başarısız olur.
+  *Android istemcisi* olarak kayıtlı olması önerilir. Paket adı `com.selim.fatura`, SHA-1 ise EAS'in
+  yönettiği keystore'undan gelir ve derlenen APK'nın imzasından okunabilir. `webClientId` akışında
+  id_token'ın `aud` değeri web istemcisidir (ve `GOOGLE_CLIENT_IDS` listesindedir), bu yüzden kayıt
+  olmadan da token alınabilir; ancak Google "first_authorized_client" isterse bu kayıt zorunlu
+  olur ve giriş "DEVELOPER_ERROR" ile başarısız olur.
 - Reddedilen token'ın sebebi API yanıtının `message` alanında döner (örn. `audience ... is not
   allowed`); eski genel mesaj yerine bu sayede ayar hataları görünür olur.
 - Apple için imza Apple JWKS ile doğrulanılır, `iss`, `aud` (bundle ID / Services ID), `exp` ve
