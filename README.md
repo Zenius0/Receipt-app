@@ -26,7 +26,7 @@ onayından sonra kaydı yazan `POST /api/v1/receipts/confirm`.
                                     │  Go API (Render)              │
                                     │                               │
                                     │  POST /api/v1/auth/google     │
-                                    │    └─ Google tokeninfo        │
+                                    │    └─ Google JWKS (RS256)      │
                                     │  POST /api/v1/auth/apple      │
                                     │    └─ Apple JWKS (RS256)      │
                                     │           │                   │
@@ -102,7 +102,7 @@ mobil oturumu `expo-secure-store` içinde saklar → sonraki istekler `Authoriza
 │   └── internal/
 │       ├── auth/                      # domain: provider doğrulama + oturum token'ı
 │       │   ├── verifier.go            #   Verifier arayüzü + Identity
-│       │   ├── google.go              #   Google tokeninfo doğrulama
+│       │   ├── google.go              #   Google JWKS (RS256) doğrulama
 │       │   ├── apple.go               #   Apple JWKS + nonce doğrulama
 │       │   ├── tokens.go              #   kendi JWT'mizi üretir/parse eder
 │       │   └── service.go             #   SignIn orkestrasyonu
@@ -672,6 +672,17 @@ düşer.
 
 - Sağlayıcı token'ları backend'de doğrulanır; istemciden gelen hiçbir `sub`/`email` değerine güvenilmez.
 - Google için `iss`, `exp` ve `aud`/`azp` (izinli client ID listesi) kontrolü yapılır; `email_verified` zorunludur.
+- **Google doğrulaması JWKS üzerinden yapılır** (`https://www.googleapis.com/oauth2/v3/certs`, RS256),
+  `oauth2.googleapis.com/tokeninfo` üzerinden değil. Tokeninfo legacy bir uç noktadır ve mobil
+  (native) istemciler için üretilen id_token'ları reddedebilir; mobil uygulamadan gelen token
+  tam olarak bu türden olduğu için doğrulama başarısız oluyordu. Apple tarafındakiyle aynı yöntem
+  hem sorunu kaldırır hem de token'ı doğrulamadan ağa göndermez.
+- **Android'de Google girişi için** uygulamanın imza parmak izi (SHA-1) Google Cloud Console'da
+  *Android istemcisi* olarak kayıtlı olmalıdır. Paket adı `com.selim.fatura`, SHA-1 ise EAS'in
+  yönettiği keystore'undan gelir ve derlenen APK'nın imzasından okunabilir. Bu kayıt yoksa giriş
+  "DEVELOPER_ERROR" ile başarısız olur.
+- Reddedilen token'ın sebebi API yanıtının `message` alanında döner (örn. `audience ... is not
+  allowed`); eski genel mesaj yerine bu sayede ayar hataları görünür olur.
 - Apple için imza Apple JWKS ile doğrulanılır, `iss`, `aud` (bundle ID / Services ID), `exp` ve
   **nonce** eşleşmesi kontrol edilir; bilinmeyen `kid` geldiğinde anahtarlar otomatik yenilenir.
 - Oturum JWT'si HS256 ile imzalanır; `JWT_SECRET` en az 32 bayt olmalı, prod'da Render tarafından üretilir.

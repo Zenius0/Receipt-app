@@ -172,7 +172,7 @@ func buildVerifiers(ctx context.Context, cfg config.Config) ([]auth.Verifier, er
 	verifiers := make([]auth.Verifier, 0, 2)
 
 	if len(cfg.GoogleClientIDs) > 0 {
-		verifier, err := auth.NewGoogleVerifier(cfg.GoogleClientIDs, "")
+		verifier, err := auth.NewGoogleVerifier(ctx, cfg.GoogleClientIDs, "")
 		if err != nil {
 			return nil, err
 		}

@@ -77,7 +77,14 @@ func (h *AuthHandler) signIn(w http.ResponseWriter, r *http.Request, provider st
 func (h *AuthHandler) handleError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, auth.ErrInvalidToken):
-		httpx.WriteError(w, http.StatusUnauthorized, "invalid_token", "provider token could not be verified")
+		// Sebep istemciye de döndürülür: "audience is not allowed" gibi bir
+		// ayar hatası aksi halde tamamen görünmez kalıyordu. Bilgiler hassas
+		// değil — yalnızca token'ın neden reddedildiğini söylüyor.
+		httpx.WriteError(w, http.StatusUnauthorized, "invalid_token", invalidTokenMessage(err))
+		h.logger.WarnContext(r.Context(), "provider token rejected",
+			slog.String("error", err.Error()),
+			slog.String("request_id", middleware.RequestIDFromContext(r.Context())),
+		)
 	case errors.Is(err, auth.ErrEmailNotVerified):
 		httpx.WriteError(w, http.StatusUnauthorized, "email_not_verified", "provider email is not verified")
 	case errors.Is(err, auth.ErrUnsupportedProvider):
@@ -91,6 +98,22 @@ func (h *AuthHandler) handleError(w http.ResponseWriter, r *http.Request, err er
 		)
 		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "unexpected error")
 	}
+}
+
+// invalidTokenMessage, sarmalanmış hata metninden anlaşılır sebebi ayıklar.
+// "auth: invalid provider token: audience ... is not allowed" ->
+// "audience ... is not allowed"
+func invalidTokenMessage(err error) string {
+	prefix := auth.ErrInvalidToken.Error()
+	detail := strings.TrimSpace(err.Error())
+
+	if rest, found := strings.CutPrefix(detail, prefix); found {
+		detail = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(rest), ":"))
+	}
+	if detail == "" {
+		return "provider token could not be verified"
+	}
+	return detail
 }
 
 type UserHandler struct {

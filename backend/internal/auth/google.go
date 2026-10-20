@@ -5,47 +5,65 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/MicahParks/keyfunc/v2"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 const (
-	providerGoogle       = "google"
-	defaultTokenInfoHost = "https://oauth2.googleapis.com/tokeninfo"
+	providerGoogle    = "google"
+	defaultGoogleJWKS = "https://www.googleapis.com/oauth2/v3/certs"
 )
 
-var googleIssuers = map[string]struct{}{
-	"accounts.google.com":         {},
-	"https://accounts.google.com": {},
-}
+// Google id_token'ları iki biçimde issuer kullanır.
+var googleIssuers = []string{"accounts.google.com", "https://accounts.google.com"}
 
+// GoogleVerifier, Google'ın imzaladığı id_token'ı JWKS üzerinden doğrular.
+//
+// Neden tokeninfo değil: oauth2.googleapis.com/tokeninfo legacy bir uç
+// noktadır ve native (Android/iOS) istemciler için üretilen id_token'ları
+// "invalid_token" ile reddedebilir. Mobil uygulamadan gelen token da tam olarak
+// bu türden olduğu için doğrulama başarısız oluyordu. Apple tarafında zaten
+// kullanılan JWKS + RS256 yöntemi hem bu sorunu ortadan kaldırır hem de
+// hata mesajlarını çok daha açık hale getirir.
 type GoogleVerifier struct {
 	clientIDs map[string]struct{}
-	endpoint  string
-	http      *http.Client
+	jwks      *keyfunc.JWKS
+	now       func() time.Time
 }
 
-func NewGoogleVerifier(clientIDs []string, endpoint string) (*GoogleVerifier, error) {
+func NewGoogleVerifier(ctx context.Context, clientIDs []string, jwksURL string) (*GoogleVerifier, error) {
 	if len(clientIDs) == 0 {
 		return nil, errors.New("auth: google verifier requires at least one client id")
 	}
-	if endpoint == "" {
-		endpoint = defaultTokenInfoHost
+	if jwksURL == "" {
+		jwksURL = defaultGoogleJWKS
 	}
 
 	allowed := make(map[string]struct{}, len(clientIDs))
 	for _, id := range clientIDs {
-		allowed[strings.TrimSpace(id)] = struct{}{}
+		if trimmed := strings.TrimSpace(id); trimmed != "" {
+			allowed[trimmed] = struct{}{}
+		}
+	}
+
+	jwks, err := keyfunc.Get(jwksURL, keyfunc.Options{
+		Ctx:              ctx,
+		RefreshInterval:  time.Hour,
+		RefreshTimeout:   10 * time.Second,
+		RefreshRateLimit: time.Minute,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("auth: google load jwks: %w", err)
 	}
 
 	return &GoogleVerifier{
 		clientIDs: allowed,
-		endpoint:  endpoint,
-		http:      &http.Client{Timeout: 10 * time.Second},
+		jwks:      jwks,
+		now:       time.Now,
 	}, nil
 }
 
@@ -53,97 +71,114 @@ func (v *GoogleVerifier) Provider() string {
 	return providerGoogle
 }
 
-func (v *GoogleVerifier) Verify(ctx context.Context, rawToken string) (Identity, error) {
+func (v *GoogleVerifier) Verify(_ context.Context, rawToken string) (Identity, error) {
 	if strings.TrimSpace(rawToken) == "" {
 		return Identity{}, fmt.Errorf("%w: token is empty", ErrInvalidToken)
 	}
 
-	endpoint := v.endpoint + "?id_token=" + url.QueryEscape(rawToken)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	var claims googleClaims
+	parsed, err := jwt.ParseWithClaims(
+		rawToken,
+		&claims,
+		v.jwks.Keyfunc,
+		jwt.WithValidMethods([]string{jwt.SigningMethodRS256.Alg()}),
+		jwt.WithLeeway(60*time.Second),
+		jwt.WithExpirationRequired(),
+		jwt.WithTimeFunc(v.now),
+	)
 	if err != nil {
-		return Identity{}, fmt.Errorf("auth: google build request: %w", err)
+		return Identity{}, fmt.Errorf("%w: %v", ErrInvalidToken, err)
 	}
-	req.Header.Set("Accept", "application/json")
-
-	res, err := v.http.Do(req)
-	if err != nil {
-		return Identity{}, fmt.Errorf("auth: google request: %w", err)
-	}
-	defer res.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
-	if err != nil {
-		return Identity{}, fmt.Errorf("auth: google read response: %w", err)
+	if !parsed.Valid {
+		return Identity{}, fmt.Errorf("%w: signature verification failed", ErrInvalidToken)
 	}
 
-	if res.StatusCode != http.StatusOK {
-		return Identity{}, fmt.Errorf("%w: tokeninfo returned %d", ErrInvalidToken, res.StatusCode)
+	// jwt/v5 tek issuer kabul ettiği için issuer'ı elle doğruluyoruz.
+	// İmza bu noktadan önce zaten doğrulanmış oluyor.
+	if !isGoogleIssuer(claims.Issuer) {
+		return Identity{}, fmt.Errorf("%w: unexpected issuer %q", ErrInvalidToken, claims.Issuer)
 	}
 
-	var payload googleTokenInfo
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return Identity{}, fmt.Errorf("%w: malformed tokeninfo payload", ErrInvalidToken)
+	// Google'da aud (token'ın verildiği istemci) ile azp (yetkili taraf)
+	// farklı olabilir. Mobil istemci webClientId kullandığı için aud web
+	// istemcisidir; bazı akışlarda ise aud Android istemcisine, azp web
+	// istemcisine işaret eder. İkisinden biri izinliyse token kabul edilir.
+	audience := []string(claims.Audience)
+	if len(audience) == 0 && claims.AuthorizedParty == "" {
+		return Identity{}, fmt.Errorf("%w: missing audience", ErrInvalidToken)
+	}
+	if !v.audienceAllowed(audience, claims.AuthorizedParty) {
+		return Identity{}, fmt.Errorf(
+			"%w: audience %q is not allowed (azp %q)",
+			ErrInvalidToken,
+			strings.Join(audience, ","),
+			claims.AuthorizedParty,
+		)
 	}
 
-	if err := v.validate(ctx, payload); err != nil {
-		return Identity{}, err
+	if claims.Subject == "" {
+		return Identity{}, fmt.Errorf("%w: missing subject", ErrInvalidToken)
+	}
+	if claims.ExpiresAt == nil {
+		return Identity{}, fmt.Errorf("%w: missing expiry", ErrInvalidToken)
+	}
+	if claims.ExpiresAt.Time.Before(v.now()) {
+		return Identity{}, fmt.Errorf("%w: token expired", ErrInvalidToken)
+	}
+
+	email := strings.ToLower(strings.TrimSpace(claims.Email))
+	if email == "" {
+		return Identity{}, fmt.Errorf("%w: missing email claim", ErrInvalidToken)
+	}
+	if !claims.isEmailVerified() {
+		return Identity{}, ErrEmailNotVerified
 	}
 
 	return Identity{
 		Provider:       providerGoogle,
-		ProviderUserID: payload.Sub,
-		Email:          strings.ToLower(strings.TrimSpace(payload.Email)),
-		EmailVerified:  payload.isEmailVerified(),
-		Name:           firstNonEmpty(payload.Name, strings.TrimSpace(payload.GivenName+" "+payload.FamilyName)),
+		ProviderUserID: claims.Subject,
+		Email:          email,
+		EmailVerified:  true,
+		Name:           firstNonEmpty(claims.Name, strings.TrimSpace(claims.GivenName+" "+claims.FamilyName)),
 	}, nil
 }
 
-func (v *GoogleVerifier) validate(_ context.Context, payload googleTokenInfo) error {
-	if _, ok := googleIssuers[payload.Iss]; !ok {
-		return fmt.Errorf("%w: unexpected issuer %q", ErrInvalidToken, payload.Iss)
-	}
-	if payload.Sub == "" {
-		return fmt.Errorf("%w: missing subject", ErrInvalidToken)
-	}
-	if payload.Aud == "" && payload.Azp == "" {
-		return fmt.Errorf("%w: missing audience", ErrInvalidToken)
-	}
-	if _, ok := v.clientIDs[payload.Aud]; !ok {
-		if _, fallback := v.clientIDs[payload.Azp]; !fallback {
-			return fmt.Errorf("%w: audience %q is not allowed", ErrInvalidToken, payload.Aud)
+// isGoogleIssuer, token'ın Google tarafından imzalandığını doğrular.
+func isGoogleIssuer(issuer string) bool {
+	for _, allowed := range googleIssuers {
+		if issuer == allowed {
+			return true
 		}
 	}
-	if payload.Exp == 0 {
-		return fmt.Errorf("%w: missing expiry", ErrInvalidToken)
-	}
-	if time.Now().After(time.Unix(payload.Exp, 0)) {
-		return fmt.Errorf("%w: token expired", ErrInvalidToken)
-	}
-	if payload.Email == "" {
-		return fmt.Errorf("%w: missing email claim", ErrInvalidToken)
-	}
-	if !payload.isEmailVerified() {
-		return ErrEmailNotVerified
-	}
-
-	return nil
+	return false
 }
 
-type googleTokenInfo struct {
-	Aud           string          `json:"aud"`
-	Azp           string          `json:"azp"`
-	Email         string          `json:"email"`
-	EmailVerified json.RawMessage `json:"email_verified"`
-	Exp           int64           `json:"exp"`
-	Iss           string          `json:"iss"`
-	Sub           string          `json:"sub"`
-	Name          string          `json:"name"`
-	GivenName     string          `json:"given_name"`
-	FamilyName    string          `json:"family_name"`
+// audienceAllowed, aud ya da azp izinli istemci listesinde mi diye bakar.
+func (v *GoogleVerifier) audienceAllowed(audience []string, authorizedParty string) bool {
+	for _, aud := range audience {
+		if _, ok := v.clientIDs[strings.TrimSpace(aud)]; ok {
+			return true
+		}
+	}
+	if authorizedParty != "" {
+		if _, ok := v.clientIDs[strings.TrimSpace(authorizedParty)]; ok {
+			return true
+		}
+	}
+	return false
 }
 
-func (g googleTokenInfo) isEmailVerified() bool {
+type googleClaims struct {
+	jwt.RegisteredClaims
+	Email           string          `json:"email"`
+	EmailVerified   json.RawMessage `json:"email_verified"`
+	Name            string          `json:"name"`
+	GivenName       string          `json:"given_name"`
+	FamilyName      string          `json:"family_name"`
+	AuthorizedParty string          `json:"azp"`
+}
+
+func (g googleClaims) isEmailVerified() bool {
 	raw := strings.Trim(strings.TrimSpace(string(g.EmailVerified)), `"`)
 	if raw == "" {
 		return false
